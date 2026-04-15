@@ -1,0 +1,4 @@
+#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")" && pwd)"
+export PATH="$HOME/.bun/bin:$PATH"
+exec "$HOME/.bun/bin/bun" run "$SCRIPT_DIR/src/index.ts"
