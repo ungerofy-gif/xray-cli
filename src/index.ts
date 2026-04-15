@@ -16,12 +16,17 @@ interface Profile {
   username: string;
   enable: number;
   flow: string;
-  limit_ip: number;
-  total_gb: number;
+  limit_gb: number;
+  upload_bytes: number;
+  download_bytes: number;
+  expire_days: number;
+  expires_at: string;
   sub_uuid: string;
   inbound_tags: string[];
+  inbound_remarks: Record<string, string>;
   server_address: string;
   remark: string;
+  server_description: string;
   created_at: string;
   updated_at: string;
 }
@@ -29,6 +34,9 @@ interface Profile {
 interface Settings {
   subscription_title: string;
   server_description: string;
+  profile_update_interval: number;
+  show_traffic_limit: number;
+  show_expiration: number;
 }
 
 interface XrayInbound {
@@ -37,7 +45,48 @@ interface XrayInbound {
   listen: string;
   protocol: string;
   settings: any;
-  stream_settings?: any;
+  stream_settings?: XrayStreamSettings;
+  streamSettings?: XrayStreamSettings;
+  tlsSettings?: XrayTlsSettings;
+  tcpSettings?: XrayTcpSettings;
+}
+
+interface XrayTcpSettings {
+  acceptProxyProtocol?: boolean;
+  header?: Record<string, unknown>;
+}
+
+interface XrayTlsSettings {
+  serverName?: string;
+  sni?: string;
+  rejectUnknownSni?: boolean;
+  allowInsecure?: boolean;
+  alpn?: string[];
+  minVersion?: string;
+  maxVersion?: string;
+  fingerprint?: string;
+  certificates?: unknown[];
+}
+
+interface XrayStreamSettings {
+  network?: string;
+  security?: string;
+  tlsSettings?: XrayTlsSettings;
+  tcpSettings?: XrayTcpSettings;
+  wsSettings?: any;
+  grpcSettings?: any;
+  httpSettings?: any;
+  realitySettings?: any;
+  sni?: string;
+  fingerprint?: string;
+  alpn?: string | string[];
+}
+
+function getInboundStreamSettings(ib: XrayInbound): XrayStreamSettings {
+  const streamSettings = (ib.stream_settings || ib.streamSettings || {}) as XrayStreamSettings;
+  if (!streamSettings.tlsSettings && ib.tlsSettings) streamSettings.tlsSettings = ib.tlsSettings;
+  if (!streamSettings.tcpSettings && ib.tcpSettings) streamSettings.tcpSettings = ib.tcpSettings;
+  return streamSettings;
 }
 
 interface Database {
@@ -52,17 +101,37 @@ function loadDB(): Database {
     return {
       profiles: (raw.profiles || []).map((p: any) => ({
         ...p,
+        limit_gb: Number(p.limit_gb ?? p.total_gb ?? 0) || 0,
+        upload_bytes: Number(p.upload_bytes ?? 0) || 0,
+        download_bytes: Number(p.download_bytes ?? 0) || 0,
+        expire_days: Number(p.expire_days ?? 0) || 0,
+        expires_at: p.expires_at || '',
         server_address: p.server_address || '',
-        remark: p.remark || p.username || ''
+        remark: p.remark || p.username || '',
+        inbound_remarks: p.inbound_remarks || {},
+        server_description: p.server_description || ''
       })),
       settings: {
         subscription_title: raw.settings?.subscription_title || '',
-        server_description: raw.settings?.server_description || ''
+        server_description: raw.settings?.server_description || '',
+        profile_update_interval: Number(raw.settings?.profile_update_interval ?? 2) || 2,
+        show_traffic_limit: raw.settings?.show_traffic_limit === undefined ? 1 : (raw.settings?.show_traffic_limit ? 1 : 0),
+        show_expiration: raw.settings?.show_expiration === undefined ? 1 : (raw.settings?.show_expiration ? 1 : 0)
       },
       nextProfileId: raw.nextProfileId || 1
     };
   }
-  return { profiles: [], settings: { subscription_title: '', server_description: '' }, nextProfileId: 1 };
+  return {
+    profiles: [],
+    settings: {
+      subscription_title: '',
+      server_description: '',
+      profile_update_interval: 2,
+      show_traffic_limit: 1,
+      show_expiration: 1
+    },
+    nextProfileId: 1
+  };
 }
 
 function saveDB(db: Database) {
@@ -147,9 +216,18 @@ function getProfile(id: number) {
   return db.profiles.find(p => p.id === id);
 }
 
-function createProfile(username: string, serverAddress?: string, remark?: string) {
+function createProfile(
+  username: string,
+  serverAddress?: string,
+  remark?: string,
+  serverDescription?: string,
+  limitGb?: number,
+  expireDays?: number
+) {
   const db = loadDB();
   const now = new Date().toISOString();
+  const ttlDays = Math.max(0, Math.floor(Number(expireDays || 0)));
+  const expiresAt = ttlDays > 0 ? new Date(Date.now() + ttlDays * 86400000).toISOString() : '';
   
   const profile: Profile = {
     id: db.nextProfileId++,
@@ -157,12 +235,17 @@ function createProfile(username: string, serverAddress?: string, remark?: string
     username,
     enable: 1,
     flow: '',
-    limit_ip: 0,
-    total_gb: 0,
+    limit_gb: Math.max(0, Number(limitGb || 0)),
+    upload_bytes: 0,
+    download_bytes: 0,
+    expire_days: ttlDays,
+    expires_at: expiresAt,
     sub_uuid: generateUniqueToken(db),
     inbound_tags: [],
+    inbound_remarks: {},
     server_address: serverAddress || '',
     remark: remark || username,
+    server_description: serverDescription || '',
     created_at: now,
     updated_at: now
   };
@@ -197,6 +280,18 @@ function setProfileInboundTags(profileId: number, tags: string[]) {
   saveDB(db);
 }
 
+function setProfileInboundRemark(profileId: number, tag: string, remark: string) {
+  const db = loadDB();
+  const profile = db.profiles.find(p => p.id === profileId);
+  if (!profile) return;
+  if (!profile.inbound_remarks) profile.inbound_remarks = {};
+  if (!tag) return;
+  if (remark.trim()) profile.inbound_remarks[tag] = remark.trim();
+  else delete profile.inbound_remarks[tag];
+  profile.updated_at = new Date().toISOString();
+  saveDB(db);
+}
+
 function updateProfile(id: number, data: { username?: string; enable?: number; flow?: string }) {
   const db = loadDB();
   const profile = db.profiles.find(p => p.id === id);
@@ -212,7 +307,13 @@ function updateProfile(id: number, data: { username?: string; enable?: number; f
 
 function getSettings(): Settings {
   const db = loadDB();
-  return db.settings || { subscription_title: '', server_description: '' };
+  return db.settings || {
+    subscription_title: '',
+    server_description: '',
+    profile_update_interval: 2,
+    show_traffic_limit: 1,
+    show_expiration: 1
+  };
 }
 
 function updateSettings(newSettings: Partial<Settings>) {
@@ -221,13 +322,27 @@ function updateSettings(newSettings: Partial<Settings>) {
   saveDB(db);
 }
 
-function updateProfileSettings(id: number, serverAddress?: string, remark?: string) {
+function updateProfileSettings(
+  id: number,
+  serverAddress?: string,
+  remark?: string,
+  serverDescription?: string,
+  limitGb?: number,
+  expireDays?: number
+) {
   const db = loadDB();
   const profile = db.profiles.find(p => p.id === id);
   if (!profile) return;
   
   if (serverAddress !== undefined) profile.server_address = serverAddress;
   if (remark !== undefined) profile.remark = remark;
+  if (serverDescription !== undefined) profile.server_description = serverDescription;
+  if (limitGb !== undefined) profile.limit_gb = Math.max(0, Number(limitGb || 0));
+  if (expireDays !== undefined) {
+    const ttlDays = Math.max(0, Math.floor(Number(expireDays || 0)));
+    profile.expire_days = ttlDays;
+    profile.expires_at = ttlDays > 0 ? new Date(Date.now() + ttlDays * 86400000).toISOString() : '';
+  }
   profile.updated_at = new Date().toISOString();
   saveDB(db);
 }
@@ -360,7 +475,7 @@ function buildXrayConfig() {
   
   const config = {
     log: { access: '/var/log/xray/access.log', error: '/var/log/xray/error.log', loglevel: 'warning' },
-    api: { tag: 'api', services: ['HandlerService', 'LoggerService', 'StatsService'] },
+    api: { tag: 'api', services: ['LoggerService', 'StatsService'] },
     stats: {},
     policy: {
       levels: { '0': { statsUserUplink: true, statsUserDownlink: true } },
@@ -383,21 +498,23 @@ function buildXrayConfig() {
       allocate: { strategy: 'always' }
     };
     
-    if (ib.stream_settings) {
-      inbound.stream_settings = ib.stream_settings;
+    if (ib.stream_settings || ib.streamSettings) {
+      inbound.stream_settings = ib.stream_settings || ib.streamSettings;
     }
     
     const clients: any[] = [];
     
     for (const profile of db.profiles.filter(p => p.enable && p.inbound_tags?.includes(ib.tag))) {
       if (ib.protocol === 'vmess' || ib.protocol === 'vless') {
-        clients.push({ id: profile.uuid, flow: profile.flow || '' });
+        clients.push({ id: profile.uuid, email: profile.username, flow: profile.flow || '' });
       } else if (ib.protocol === 'trojan') {
         const pass = (ib.settings as any)?.clients?.[0]?.password || profile.uuid;
-        clients.push({ password: pass });
+        clients.push({ password: pass, email: profile.username });
       } else if (ib.protocol === 'shadowsocks') {
         const ssSettings = (ib.settings as any)?.clients?.[0] || {};
-        clients.push({ method: ssSettings.method || 'aes-256-gcm', password: ssSettings.password || profile.uuid });
+        clients.push({ method: ssSettings.method || 'aes-256-gcm', password: ssSettings.password || profile.uuid, email: profile.username });
+      } else if (ib.protocol === 'hysteria2') {
+        clients.push({ password: profile.uuid, email: profile.username });
       }
     }
     
@@ -446,44 +563,112 @@ function getServerAddress(): string {
 
 function generateSubscription(profile: Profile): string {
   const db = loadDB();
-  const settings = db.settings || { subscription_title: '', server_description: '' };
+  const settings = db.settings || getSettings();
+  const p = db.profiles.find(v => v.id === profile.id) || profile;
   const xrayInbounds = getXrayInbounds();
   const fallbackAddress = getServerAddress();
-  const serverAddress = profile.server_address || fallbackAddress;
+  const serverAddress = p.server_address || fallbackAddress;
   const links: string[] = [];
+  const meta: string[] = [];
+  meta.push('#subscription-auto-update-enable: 1');
+  meta.push(`#profile-update-interval: ${Math.max(1, settings.profile_update_interval || 2)}`);
+  if (settings.show_traffic_limit || settings.show_expiration) {
+    const total = settings.show_traffic_limit ? Math.max(0, Math.floor((p.limit_gb || 0) * 1024 * 1024 * 1024)) : 0;
+    const upload = settings.show_traffic_limit ? Math.max(0, Math.floor(p.upload_bytes || 0)) : 0;
+    const download = settings.show_traffic_limit ? Math.max(0, Math.floor(p.download_bytes || 0)) : 0;
+    const expire = settings.show_expiration && p.expires_at ? Math.floor(new Date(p.expires_at).getTime() / 1000) : 0;
+    meta.push(`#subscription-userinfo: upload=${upload}; download=${download}; total=${total}; expire=${expire}`);
+  }
   const titlePrefix = settings.subscription_title ? `${settings.subscription_title} - ` : '';
-  const globalServerDesc = settings.server_description ? Buffer.from(settings.server_description).toString('base64') : '';
-  const descParam = globalServerDesc ? `?serverDescription=${globalServerDesc}` : '';
   
   for (const ib of xrayInbounds) {
-    if (!profile.inbound_tags?.includes(ib.tag)) continue;
-    const nodeName = encodeURIComponent(`${titlePrefix}${profile.remark || profile.username}`);
+    if (!p.inbound_tags?.includes(ib.tag)) continue;
+    const streamSettings = getInboundStreamSettings(ib);
+    const inboundSettings = (ib.settings as any) || {};
+    const inboundRemark = p.inbound_remarks?.[ib.tag];
+    const title = `${titlePrefix}${inboundRemark || p.remark || p.username}`;
+    const remark = encodeURIComponent(title);
+    const effectiveDesc = p.server_description || settings.server_description || '';
+    const serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
+    const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
     
     if (ib.protocol === 'vmess') {
-      const vmess = {
+      const vmess: any = {
         v: '2',
-        ps: `${titlePrefix}${profile.remark || profile.username}`,
+        ps: title,
         add: serverAddress,
-        port: String(ib.port),
-        id: profile.uuid,
+        port: ib.port,
+        id: p.uuid,
         aid: 0,
-        net: 'tcp'
+        net: streamSettings.network || 'tcp',
+        tls: streamSettings.security || ''
       };
+      if (streamSettings.tlsSettings) {
+        if (streamSettings.tlsSettings.sni) vmess.sni = streamSettings.tlsSettings.sni;
+        if (streamSettings.tlsSettings.serverName) vmess.sni = streamSettings.tlsSettings.serverName;
+        if (streamSettings.tlsSettings.fingerprint) vmess.fp = streamSettings.tlsSettings.fingerprint;
+        if (streamSettings.tlsSettings.alpn) vmess.alpn = streamSettings.tlsSettings.alpn;
+      }
+      if (streamSettings.wsSettings?.path) vmess.path = streamSettings.wsSettings.path;
+      if (streamSettings.wsSettings?.headers?.Host) vmess.host = streamSettings.wsSettings.headers.Host;
+      if (streamSettings.grpcSettings?.serviceName) vmess.path = streamSettings.grpcSettings.serviceName;
       const encoded = Buffer.from(JSON.stringify(vmess)).toString('base64');
       links.push(`vmess://${encoded}`);
     } else if (ib.protocol === 'vless') {
-      links.push(`vless://${profile.uuid}@${serverAddress}:${ib.port}?flow=${profile.flow || ''}#${nodeName}${descParam}`);
+      const params = new URLSearchParams();
+      if (streamSettings.security) params.set('security', streamSettings.security);
+      if (streamSettings.network) params.set('type', streamSettings.network);
+      if (streamSettings.tlsSettings?.sni) params.set('sni', streamSettings.tlsSettings.sni);
+      if (streamSettings.tlsSettings?.serverName) params.set('sni', streamSettings.tlsSettings.serverName);
+      if (streamSettings.tlsSettings?.fingerprint) params.set('fp', streamSettings.tlsSettings.fingerprint);
+      if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
+      if (streamSettings.realitySettings?.publicKey) params.set('pbk', streamSettings.realitySettings.publicKey);
+      if (streamSettings.realitySettings?.shortId) params.set('sid', streamSettings.realitySettings.shortId);
+      if (streamSettings.realitySettings?.spiderX) params.set('spx', streamSettings.realitySettings.spiderX);
+      if (streamSettings.wsSettings?.path) params.set('path', streamSettings.wsSettings.path);
+      if (streamSettings.wsSettings?.headers?.Host) params.set('host', streamSettings.wsSettings.headers.Host);
+      if (streamSettings.grpcSettings?.serviceName) params.set('serviceName', streamSettings.grpcSettings.serviceName);
+      if (streamSettings.grpcSettings?.mode) params.set('mode', streamSettings.grpcSettings.mode);
+      params.set('flow', profile.flow || 'xtls-rprx-vision');
+      params.set('encryption', 'none');
+      links.push(`vless://${p.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
     } else if (ib.protocol === 'trojan') {
-      const pass = (ib.settings as any)?.clients?.[0]?.password || profile.uuid;
-      links.push(`trojan://${pass}@${serverAddress}:${ib.port}#${nodeName}${descParam}`);
+      const params = new URLSearchParams();
+      const pass = inboundSettings?.clients?.[0]?.password || p.uuid;
+      if (streamSettings.security) params.set('security', streamSettings.security);
+      if (streamSettings.network) params.set('type', streamSettings.network);
+      if (streamSettings.tlsSettings?.sni) params.set('sni', streamSettings.tlsSettings.sni);
+      if (streamSettings.tlsSettings?.serverName) params.set('sni', streamSettings.tlsSettings.serverName);
+      if (streamSettings.tlsSettings?.fingerprint) params.set('fp', streamSettings.tlsSettings.fingerprint);
+      if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
+      if (streamSettings.wsSettings?.path) params.set('path', streamSettings.wsSettings.path);
+      if (streamSettings.wsSettings?.headers?.Host) params.set('host', streamSettings.wsSettings.headers.Host);
+      if (streamSettings.grpcSettings?.serviceName) params.set('serviceName', streamSettings.grpcSettings.serviceName);
+      links.push(`trojan://${pass}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
     } else if (ib.protocol === 'shadowsocks') {
-      const ssSettings = (ib.settings as any)?.clients?.[0] || {};
-      const ss = `${ssSettings.method || 'aes-256-gcm'}:${ssSettings.password || profile.uuid}@${serverAddress}:${ib.port}`;
-      links.push(`ss://${Buffer.from(ss).toString('base64')}#${nodeName}${descParam}`);
+      const ssSettings = inboundSettings?.clients?.[0] || {};
+      const ss = `${ssSettings.method || 'aes-256-gcm'}:${ssSettings.password || p.uuid}@${serverAddress}:${ib.port}`;
+      links.push(`ss://${Buffer.from(ss).toString('base64')}#${remark}${descParam}`);
+    } else if (ib.protocol === 'hysteria2') {
+      const params = new URLSearchParams();
+      const auth = p.uuid;
+      if (streamSettings.sni) params.set('sni', streamSettings.sni);
+      if (streamSettings.tlsSettings?.sni) params.set('sni', streamSettings.tlsSettings.sni);
+      if (streamSettings.tlsSettings?.serverName) params.set('sni', streamSettings.tlsSettings.serverName);
+      if (streamSettings.fingerprint) params.set('fp', streamSettings.fingerprint);
+      if (streamSettings.tlsSettings?.fingerprint) params.set('fp', streamSettings.tlsSettings.fingerprint);
+      if (Array.isArray(streamSettings.alpn)) params.set('alpn', streamSettings.alpn.join(','));
+      else if (typeof streamSettings.alpn === 'string') params.set('alpn', streamSettings.alpn);
+      if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
+      if (inboundSettings.obfs) params.set('obfs', inboundSettings.obfs);
+      if (inboundSettings.obfsPassword) params.set('obfs-password', inboundSettings.obfsPassword);
+      if (inboundSettings.upMbps) params.set('up', String(inboundSettings.upMbps));
+      if (inboundSettings.downMbps) params.set('down', String(inboundSettings.downMbps));
+      links.push(`hysteria2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
     }
   }
   
-  return Buffer.from(links.join('\n')).toString('base64');
+  return Buffer.from([...meta, ...links].join('\n')).toString('base64');
 }
 
 async function dashboard() {
@@ -510,7 +695,8 @@ async function dashboard() {
   for (const p of profiles) {
     const status = p.enable ? '[ON]' : '[OFF]';
     const tagCount = p.inbound_tags?.length || 0;
-    lines.push(`${status} ${fitText(p.username, 15).padEnd(15, ' ')} ${(p.sub_uuid || '').slice(0, 10)}  ${tagCount} inbounds`);
+    const expTs = p.expires_at ? Math.floor(new Date(p.expires_at).getTime() / 1000) : 0;
+    lines.push(`${status} ${fitText(p.username, 15).padEnd(15, ' ')} ${(p.sub_uuid || '').slice(0, 10)}  ${tagCount} inb  ${p.limit_gb}GB exp:${expTs ? new Date(expTs * 1000).toISOString().slice(0, 10) : 'none'}`);
   }
   if (profiles.length === 0) lines.push('No users yet');
 
@@ -521,37 +707,40 @@ async function dashboard() {
 async function listProfiles() {
   const profiles = getProfiles();
 
-  const lines = ['ID   USERNAME         TOKEN       ENABLED', '-'.repeat(44)];
+  const lines = ['ID   USERNAME         TOKEN       EN  LIMIT  EXP(D)', '-'.repeat(58)];
   if (profiles.length === 0) {
     lines.push('No profiles found.');
   } else {
     for (const p of profiles) {
-      lines.push(`${String(p.id).padEnd(4, ' ')} ${fitText(p.username, 15).padEnd(15, ' ')} ${(p.sub_uuid || '').slice(0, 10).padEnd(11, ' ')} ${p.enable ? 'Yes' : 'No'}`);
+      lines.push(`${String(p.id).padEnd(4, ' ')} ${fitText(p.username, 15).padEnd(15, ' ')} ${(p.sub_uuid || '').slice(0, 10).padEnd(11, ' ')} ${p.enable ? 'Y ' : 'N '} ${String(p.limit_gb).padStart(5, ' ')}G ${String(p.expire_days || 0).padStart(6, ' ')}`);
     }
   }
   renderPanel('Profiles', lines);
 }
 
 async function manageInbounds(profileId: number) {
-  const profile = getProfile(profileId);
-  if (!profile) return;
+  if (!getProfile(profileId)) return;
   
   while (true) {
     clear();
     
+    const profile = getProfile(profileId);
+    if (!profile) return;
     const xrayInbounds = getXrayInbounds();
     const currentTags = profile.inbound_tags || [];
     const lines = ['Available inbounds', '-'.repeat(20)];
 
     for (const ib of xrayInbounds) {
       const selected = currentTags.includes(ib.tag) ? '[x]' : '[ ]';
-      lines.push(`${selected} ${fitText(ib.tag, 18).padEnd(18, ' ')} (${ib.protocol}:${ib.port})`);
+      const inboundRemark = profile.inbound_remarks?.[ib.tag] || '-';
+      lines.push(`${selected} ${fitText(ib.tag, 12).padEnd(12, ' ')} (${ib.protocol}:${ib.port}) ${fitText(inboundRemark, 20)}`);
     }
     lines.push('');
     lines.push(`Current tags: ${currentTags.length > 0 ? currentTags.join(', ') : 'none'}`);
     lines.push('');
     lines.push('1. Add inbound by tag');
     lines.push('2. Remove inbound by tag');
+    lines.push('3. Set inbound remark');
     lines.push('0. Back');
     renderPanel(`Inbounds | ${profile.username}`, lines);
     
@@ -585,6 +774,17 @@ async function manageInbounds(profileId: number) {
         reloadXray();
       } else {
         console.log('Tag not in profile');
+      }
+    } else if (choice === '3') {
+      const tag = promptCentered('Inbound tag: ');
+      if (!tag) continue;
+      if (!xrayInbounds.find(ib => ib.tag === tag)) {
+        console.log('Tag not found in Xray config');
+      } else {
+        const current = profile.inbound_remarks?.[tag] || '';
+        const inboundRemark = promptCentered(`Remark for ${tag} (${current || 'empty'}): `);
+        setProfileInboundRemark(profileId, tag, inboundRemark);
+        console.log('✓ Inbound remark updated');
       }
     } else {
       break;
@@ -714,7 +914,17 @@ async function main() {
         if (username) {
           const serverAddr = promptCentered('Server address (empty = auto): ');
           const remark = promptCentered('Remark (display name): ');
-          const profile = createProfile(username, serverAddr || undefined, remark || undefined);
+          const serverDesc = promptCentered('Server description (empty = none): ');
+          const limitGb = Number(promptCentered('Traffic limit GB (0 = no limit): ') || '0');
+          const expireDays = Number(promptCentered('Expiration period in days (0 = none): ') || '0');
+          const profile = createProfile(
+            username,
+            serverAddr || undefined,
+            remark || undefined,
+            serverDesc || undefined,
+            limitGb || 0,
+            expireDays || 0
+          );
           console.log(`✓ Profile created: ${profile.username}`);
           
           const add = promptCentered('Add inbound? (y/n): ');
@@ -756,10 +966,16 @@ async function main() {
           `Database: ${DB_PATH}`,
           `Subscription Title: ${settings.subscription_title || '(default)'}`,
           `Server Description: ${settings.server_description || '(none)'}`,
+          `Auto Update Interval (h): ${settings.profile_update_interval || 2}`,
+          `Show Traffic Limit: ${settings.show_traffic_limit ? 'ON' : 'OFF'}`,
+          `Show Expiration: ${settings.show_expiration ? 'ON' : 'OFF'}`,
           '',
           '1. Set Subscription Title',
           '2. Set Server Description (global)',
-          '3. Edit Profile',
+          '3. Set Auto Update Interval (hours)',
+          '4. Toggle Show Traffic Limit',
+          '5. Toggle Show Expiration',
+          '6. Edit Profile',
           '0. Back'
         ]);
 
@@ -773,16 +989,32 @@ async function main() {
           updateSettings({ server_description: desc });
           console.log('✓ Description updated');
         } else if (s === '3') {
+          const hours = Number(promptCentered(`Auto update interval hours (${settings.profile_update_interval || 2}): `) || '2');
+          updateSettings({ profile_update_interval: Math.max(1, Math.floor(hours || 2)) });
+          console.log('✓ Update interval saved');
+        } else if (s === '4') {
+          updateSettings({ show_traffic_limit: settings.show_traffic_limit ? 0 : 1 });
+          console.log('✓ Traffic-limit display updated');
+        } else if (s === '5') {
+          updateSettings({ show_expiration: settings.show_expiration ? 0 : 1 });
+          console.log('✓ Expiration display updated');
+        } else if (s === '6') {
           const id = promptCentered('Profile ID: ');
           const profile = getProfile(parseInt(id));
           if (profile) {
             const newAddr = promptCentered(`Server address (${profile.server_address || 'auto'}): `);
             const newRemark = promptCentered(`Remark (${profile.remark || profile.username}): `);
-            if (newAddr !== '' || newRemark !== '') {
+            const newServerDesc = promptCentered(`Server description (${profile.server_description || 'none'}): `);
+            const newLimitGb = promptCentered(`Traffic limit GB (${profile.limit_gb || 0}): `);
+            const newExpireDays = promptCentered(`Expiration days (${profile.expire_days || 0}): `);
+            if (newAddr !== '' || newRemark !== '' || newServerDesc !== '' || newLimitGb !== '' || newExpireDays !== '') {
               updateProfileSettings(
                 parseInt(id),
                 newAddr || profile.server_address,
-                newRemark || profile.remark
+                newRemark || profile.remark,
+                newServerDesc || profile.server_description,
+                newLimitGb === '' ? profile.limit_gb : Number(newLimitGb),
+                newExpireDays === '' ? profile.expire_days : Number(newExpireDays)
               );
               console.log('✓ Profile updated');
             }

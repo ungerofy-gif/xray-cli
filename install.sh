@@ -104,27 +104,36 @@ install_deps() {
 
 clone_source() {
     log_step "Cloning xray-cli from git..."
-    
-    REPO_URL="${REPO_URL:-https://github.com/mht-xray/xray-cli.git}"
-    
+
+    REPO_URL="${REPO_URL:-https://github.com/ungerofy-gif/xray-cli.git}"
+    REPO_BRANCH="${REPO_BRANCH:-main}"
+
     if [ -d "$INSTALL_DIR/.git" ]; then
-        log_info "Updating existing installation..."
+        log_info "Updating existing installation from $REPO_URL..."
         cd "$INSTALL_DIR"
-        git fetch origin
-        git reset --hard origin/main 2>/dev/null || git reset --hard origin/master 2>/dev/null || {
-            log_warn "Update failed, removing and re-cloning..."
+
+        CURRENT_REMOTE="$(git remote get-url origin 2>/dev/null || true)"
+        if [ "$CURRENT_REMOTE" != "$REPO_URL" ]; then
+            log_warn "Remote URL mismatch. Replacing origin with: $REPO_URL"
+            git remote set-url origin "$REPO_URL"
+        fi
+
+        git fetch --prune origin
+        git checkout "$REPO_BRANCH" 2>/dev/null || git checkout -b "$REPO_BRANCH" "origin/$REPO_BRANCH"
+        git pull --ff-only origin "$REPO_BRANCH" || {
+            log_warn "Fast-forward pull failed. Re-cloning clean copy..."
+            cd /
             rm -rf "$INSTALL_DIR"
         }
     fi
-    
-    if [ ! -d "$INSTALL_DIR" ]; then
-        git clone "$REPO_URL" "$INSTALL_DIR" || {
-            log_error "Failed to clone repository"
-            log_info "Make sure the repository exists or set REPO_URL"
+
+    if [ ! -d "$INSTALL_DIR/.git" ]; then
+        git clone --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR" || {
+            log_error "Failed to clone repository: $REPO_URL (branch: $REPO_BRANCH)"
             exit 1
         }
     fi
-    
+
     log_info "Source code installed to $INSTALL_DIR"
 }
 
@@ -224,6 +233,47 @@ EOF
     log_info "Global scripts created: xraycli, xraycli-api"
 }
 
+create_xraycli_api_service() {
+    log_step "Creating systemd service for xraycli-api..."
+
+    tee /etc/systemd/system/xraycli-api.service > /dev/null << 'EOF'
+[Unit]
+Description=Xray CLI API Service
+After=network.target xray.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/local/xray-cli
+Environment=XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json
+Environment=API_HOST=127.0.0.1
+Environment=API_PORT=2053
+ExecStart=/usr/local/bin/xraycli-api
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now xraycli-api 2>/dev/null || {
+        log_warn "Failed to enable/start xraycli-api automatically"
+        log_info "Start manually with: systemctl start xraycli-api"
+        return
+    }
+
+    if systemctl is-active --quiet xraycli-api 2>/dev/null; then
+        log_info "xraycli-api service is running"
+    else
+        log_warn "xraycli-api service is installed but not running"
+        log_info "Check logs: journalctl -u xraycli-api -n 100 --no-pager"
+    fi
+}
+
 verify_installation() {
     log_step "Verifying installation..."
     
@@ -311,6 +361,7 @@ main() {
     install_bun
     install_xray_cli_deps
     create_global_scripts
+    create_xraycli_api_service
     verify_installation
 }
 

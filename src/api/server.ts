@@ -16,11 +16,16 @@ interface Profile {
   username: string;
   enable: number;
   flow: string;
-  limit_ip: number;
-  total_gb: number;
+  limit_gb: number;
+  upload_bytes: number;
+  download_bytes: number;
+  expire_days: number;
+  expires_at: string;
   sub_uuid: string;
   inbound_tags: string[];
+  inbound_remarks: Record<string, string>;
   server_address: string;
+  remark: string;
   server_description: string;
   created_at: string;
   updated_at: string;
@@ -29,6 +34,9 @@ interface Profile {
 interface Settings {
   subscription_title: string;
   server_description: string;
+  profile_update_interval: number;
+  show_traffic_limit: number;
+  show_expiration: number;
 }
 
 interface Database {
@@ -43,7 +51,48 @@ interface XrayInbound {
   listen: string;
   protocol: string;
   settings: any;
-  stream_settings?: any;
+  stream_settings?: XrayStreamSettings;
+  streamSettings?: XrayStreamSettings;
+  tlsSettings?: XrayTlsSettings;
+  tcpSettings?: XrayTcpSettings;
+}
+
+interface XrayTcpSettings {
+  acceptProxyProtocol?: boolean;
+  header?: Record<string, unknown>;
+}
+
+interface XrayTlsSettings {
+  serverName?: string;
+  sni?: string;
+  rejectUnknownSni?: boolean;
+  allowInsecure?: boolean;
+  alpn?: string[];
+  minVersion?: string;
+  maxVersion?: string;
+  fingerprint?: string;
+  certificates?: unknown[];
+}
+
+interface XrayStreamSettings {
+  network?: string;
+  security?: string;
+  tlsSettings?: XrayTlsSettings;
+  tcpSettings?: XrayTcpSettings;
+  wsSettings?: any;
+  grpcSettings?: any;
+  httpSettings?: any;
+  realitySettings?: any;
+  sni?: string;
+  fingerprint?: string;
+  alpn?: string | string[];
+}
+
+function getInboundStreamSettings(ib: XrayInbound): XrayStreamSettings {
+  const streamSettings = (ib.stream_settings || ib.streamSettings || {}) as XrayStreamSettings;
+  if (!streamSettings.tlsSettings && ib.tlsSettings) streamSettings.tlsSettings = ib.tlsSettings;
+  if (!streamSettings.tcpSettings && ib.tcpSettings) streamSettings.tcpSettings = ib.tcpSettings;
+  return streamSettings;
 }
 
 function loadDB(): Database {
@@ -52,19 +101,35 @@ function loadDB(): Database {
     return {
       profiles: (raw.profiles || []).map((p: any) => ({
         ...p,
+        limit_gb: Number(p.limit_gb ?? p.total_gb ?? 0) || 0,
+        upload_bytes: Number(p.upload_bytes ?? 0) || 0,
+        download_bytes: Number(p.download_bytes ?? 0) || 0,
+        expire_days: Number(p.expire_days ?? 0) || 0,
+        expires_at: p.expires_at || '',
+        inbound_remarks: p.inbound_remarks || {},
         server_address: p.server_address || '',
+        remark: p.remark || p.username || '',
         server_description: p.server_description || ''
       })),
       settings: {
         subscription_title: raw.settings?.subscription_title || '',
-        server_description: raw.settings?.server_description || ''
+        server_description: raw.settings?.server_description || '',
+        profile_update_interval: Number(raw.settings?.profile_update_interval ?? 2) || 2,
+        show_traffic_limit: raw.settings?.show_traffic_limit === undefined ? 1 : (raw.settings?.show_traffic_limit ? 1 : 0),
+        show_expiration: raw.settings?.show_expiration === undefined ? 1 : (raw.settings?.show_expiration ? 1 : 0)
       },
       nextProfileId: raw.nextProfileId || 1
     };
   }
   return {
     profiles: [],
-    settings: { subscription_title: '', server_description: '' },
+    settings: {
+      subscription_title: '',
+      server_description: '',
+      profile_update_interval: 2,
+      show_traffic_limit: 1,
+      show_expiration: 1
+    },
     nextProfileId: 1
   };
 }
@@ -209,6 +274,21 @@ function getXrayStats(): Record<string, number> {
   return stats;
 }
 
+function syncProfileUsageFromStats(db: Database, stats: Record<string, number>): boolean {
+  let changed = false;
+  for (const p of db.profiles) {
+    const uplink = stats[`user>>>${p.username}>>>traffic>>>uplink`] ?? stats[`user>>>${p.username}>>>uplink`] ?? 0;
+    const downlink = stats[`user>>>${p.username}>>>traffic>>>downlink`] ?? stats[`user>>>${p.username}>>>downlink`] ?? 0;
+    if (p.upload_bytes !== uplink || p.download_bytes !== downlink) {
+      p.upload_bytes = uplink;
+      p.download_bytes = downlink;
+      p.updated_at = new Date().toISOString();
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 function buildXrayConfig() {
   const db = loadDB();
   const xrayInbounds = getXrayInbounds();
@@ -238,21 +318,23 @@ function buildXrayConfig() {
       allocate: { strategy: 'always' }
     };
     
-    if (ib.stream_settings) {
-      inbound.stream_settings = ib.stream_settings;
+    if (ib.stream_settings || ib.streamSettings) {
+      inbound.stream_settings = ib.stream_settings || ib.streamSettings;
     }
     
     const clients: any[] = [];
     
     for (const profile of db.profiles.filter(p => p.enable && p.inbound_tags?.includes(ib.tag))) {
       if (ib.protocol === 'vmess' || ib.protocol === 'vless') {
-        clients.push({ id: profile.uuid, flow: 'xtls-rprx-vision' });
+        clients.push({ id: profile.uuid, email: profile.username, flow: 'xtls-rprx-vision' });
       } else if (ib.protocol === 'trojan') {
         const pass = (ib.settings as any)?.clients?.[0]?.password || profile.uuid;
-        clients.push({ password: pass });
+        clients.push({ password: pass, email: profile.username });
       } else if (ib.protocol === 'shadowsocks') {
         const ssSettings = (ib.settings as any)?.clients?.[0] || {};
-        clients.push({ method: ssSettings.method || 'aes-256-gcm', password: ssSettings.password || profile.uuid });
+        clients.push({ method: ssSettings.method || 'aes-256-gcm', password: ssSettings.password || profile.uuid, email: profile.username });
+      } else if (ib.protocol === 'hysteria2') {
+        clients.push({ password: profile.uuid, email: profile.username });
       }
     }
     
@@ -289,22 +371,37 @@ function getServerAddress(): string {
 
 function generateSubscription(profile: Profile): string {
   const db = loadDB();
-  const globalTitle = db.settings?.subscription_title || '';
-  const globalServerDescription = db.settings?.server_description || '';
+  const stats = getXrayStats();
+  if (syncProfileUsageFromStats(db, stats)) saveDB(db);
+  const settingsRoot = db.settings;
+  const p = db.profiles.find(v => v.id === profile.id) || profile;
+  const globalTitle = settingsRoot.subscription_title || '';
+  const globalServerDescription = settingsRoot.server_description || '';
   const xrayInbounds = getXrayInbounds();
   const fallbackAddress = getServerAddress();
-  const serverAddress = profile.server_address || fallbackAddress;
+  const serverAddress = p.server_address || fallbackAddress;
   const links: string[] = [];
+  const meta: string[] = [];
+  meta.push('#subscription-auto-update-enable: 1');
+  meta.push(`#profile-update-interval: ${Math.max(1, settingsRoot.profile_update_interval || 2)}`);
+  if (settingsRoot.show_traffic_limit || settingsRoot.show_expiration) {
+    const total = settingsRoot.show_traffic_limit ? Math.max(0, Math.floor((p.limit_gb || 0) * 1024 * 1024 * 1024)) : 0;
+    const upload = settingsRoot.show_traffic_limit ? Math.max(0, Math.floor(p.upload_bytes || 0)) : 0;
+    const download = settingsRoot.show_traffic_limit ? Math.max(0, Math.floor(p.download_bytes || 0)) : 0;
+    const expire = settingsRoot.show_expiration && p.expires_at ? Math.floor(new Date(p.expires_at).getTime() / 1000) : 0;
+    meta.push(`#subscription-userinfo: upload=${upload}; download=${download}; total=${total}; expire=${expire}`);
+  }
   
   for (const ib of xrayInbounds) {
-    if (!profile.inbound_tags?.includes(ib.tag)) continue;
+    if (!p.inbound_tags?.includes(ib.tag)) continue;
     
-    const streamSettings = ib.stream_settings as any || {};
+    const streamSettings = getInboundStreamSettings(ib);
     const settings = ib.settings as any || {};
     
     const params = new URLSearchParams();
     const titlePrefix = globalTitle ? `${globalTitle} - ` : '';
-    const title = `${titlePrefix}${profile.username}-${ib.tag}`;
+    const inboundRemark = p.inbound_remarks?.[ib.tag];
+    const title = `${titlePrefix}${inboundRemark || p.remark || p.username}`;
     let serverDescription = '';
     
     if (ib.protocol === 'vmess') {
@@ -313,7 +410,7 @@ function generateSubscription(profile: Profile): string {
         ps: title,
         add: serverAddress,
         port: ib.port,
-        id: profile.uuid,
+        id: p.uuid,
         aid: 0,
         net: streamSettings.network || 'tcp',
         tls: streamSettings.security || ''
@@ -321,6 +418,7 @@ function generateSubscription(profile: Profile): string {
       
       if (streamSettings.tlsSettings) {
         if (streamSettings.tlsSettings.sni) vmess.sni = streamSettings.tlsSettings.sni;
+        if (streamSettings.tlsSettings.serverName) vmess.sni = streamSettings.tlsSettings.serverName;
         if (streamSettings.tlsSettings.fingerprint) vmess.fp = streamSettings.tlsSettings.fingerprint;
         if (streamSettings.tlsSettings.alpn) vmess.alpn = streamSettings.tlsSettings.alpn;
       }
@@ -341,8 +439,9 @@ function generateSubscription(profile: Profile): string {
       if (streamSettings.security) params.set('security', streamSettings.security);
       if (streamSettings.network) params.set('type', streamSettings.network);
       if (streamSettings.tlsSettings?.sni) params.set('sni', streamSettings.tlsSettings.sni);
+      if (streamSettings.tlsSettings?.serverName) params.set('sni', streamSettings.tlsSettings.serverName);
       if (streamSettings.tlsSettings?.fingerprint) params.set('fp', streamSettings.tlsSettings.fingerprint);
-      if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn);
+      if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
       if (streamSettings.realitySettings?.publicKey) params.set('pbk', streamSettings.realitySettings.publicKey);
       if (streamSettings.realitySettings?.shortId) params.set('sid', streamSettings.realitySettings.shortId);
       if (streamSettings.realitySettings?.spiderX) params.set('spx', streamSettings.realitySettings.spiderX);
@@ -361,20 +460,21 @@ function generateSubscription(profile: Profile): string {
       params.set('flow', 'xtls-rprx-vision');
       params.set('encryption', 'none');
       
-      const effectiveDesc = profile.server_description || globalServerDescription;
+      const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
       const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
-      links.push(`vless://${profile.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
+      links.push(`vless://${p.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
       
     } else if (ib.protocol === 'trojan') {
-      const password = settings.clients?.[0]?.password || profile.uuid;
+      const password = settings.clients?.[0]?.password || p.uuid;
       
       if (streamSettings.security) params.set('security', streamSettings.security);
       if (streamSettings.network) params.set('type', streamSettings.network);
       if (streamSettings.tlsSettings?.sni) params.set('sni', streamSettings.tlsSettings.sni);
+      if (streamSettings.tlsSettings?.serverName) params.set('sni', streamSettings.tlsSettings.serverName);
       if (streamSettings.tlsSettings?.fingerprint) params.set('fp', streamSettings.tlsSettings.fingerprint);
-      if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn);
+      if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
       
       if (streamSettings.wsSettings) {
         if (streamSettings.wsSettings.path) params.set('path', streamSettings.wsSettings.path);
@@ -385,7 +485,7 @@ function generateSubscription(profile: Profile): string {
         params.set('serviceName', streamSettings.grpcSettings.serviceName);
       }
       
-      const effectiveDesc = profile.server_description || globalServerDescription;
+      const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
       const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
@@ -394,29 +494,34 @@ function generateSubscription(profile: Profile): string {
     } else if (ib.protocol === 'shadowsocks') {
       const ssSettings = settings.clients?.[0] || {};
       const method = ssSettings.method || 'aes-256-gcm';
-      const password = ssSettings.password || profile.uuid;
+      const password = ssSettings.password || p.uuid;
       
       const ssPart = `${method}:${password}`;
       const ssEncoded = Buffer.from(ssPart).toString('base64').replace(/=+$/, '');
       
-      const effectiveDesc = profile.server_description || globalServerDescription;
+      const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
       const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
       links.push(`ss://${ssEncoded}@${serverAddress}:${ib.port}#${remark}${descParam}`);
       
     } else if (ib.protocol === 'hysteria2') {
-      const auth = profile.uuid;
+      const auth = p.uuid;
       
       if (streamSettings.sni) params.set('sni', streamSettings.sni);
+      if (streamSettings.tlsSettings?.sni) params.set('sni', streamSettings.tlsSettings.sni);
+      if (streamSettings.tlsSettings?.serverName) params.set('sni', streamSettings.tlsSettings.serverName);
       if (streamSettings.fingerprint) params.set('fp', streamSettings.fingerprint);
-      if (streamSettings.alpn) params.set('alpn', streamSettings.alpn);
+      if (streamSettings.tlsSettings?.fingerprint) params.set('fp', streamSettings.tlsSettings.fingerprint);
+      if (Array.isArray(streamSettings.alpn)) params.set('alpn', streamSettings.alpn.join(','));
+      else if (typeof streamSettings.alpn === 'string') params.set('alpn', streamSettings.alpn);
+      if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
       if (settings.obfs) params.set('obfs', settings.obfs);
       if (settings.obfsPassword) params.set('obfs-password', settings.obfsPassword);
       if (settings.upMbps) params.set('up', String(settings.upMbps));
       if (settings.downMbps) params.set('down', String(settings.downMbps));
       
-      const effectiveDesc = profile.server_description || globalServerDescription;
+      const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
       const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
@@ -430,7 +535,7 @@ function generateSubscription(profile: Profile): string {
       const allowedIPs = peer.allowedIPs?.join(',') || '0.0.0.0/0';
       const endpoint = peer.endpoint || `${serverAddress}:${ib.port}`;
       
-      const effectiveDesc = profile.server_description || globalServerDescription;
+      const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
       const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
@@ -438,7 +543,7 @@ function generateSubscription(profile: Profile): string {
     }
   }
   
-  return Buffer.from(links.join('\n')).toString('base64');
+  return Buffer.from([...meta, ...links].join('\n')).toString('base64');
 }
 
 app.get('/health', requireAuth, (req, res) => {
@@ -448,10 +553,11 @@ app.get('/health', requireAuth, (req, res) => {
 app.get('/stats', requireAuth, (req, res) => {
   const stats = getXrayStats();
   const db = loadDB();
+  if (syncProfileUsageFromStats(db, stats)) saveDB(db);
   
   const profileStats = db.profiles.map(p => {
-    const uplink = stats[`user>>>${p.username}>>>uplink`] || 0;
-    const downlink = stats[`user>>>${p.username}>>>downlink`] || 0;
+    const uplink = stats[`user>>>${p.username}>>>traffic>>>uplink`] ?? stats[`user>>>${p.username}>>>uplink`] ?? p.upload_bytes ?? 0;
+    const downlink = stats[`user>>>${p.username}>>>traffic>>>downlink`] ?? stats[`user>>>${p.username}>>>downlink`] ?? p.download_bytes ?? 0;
     
     return { username: p.username, uuid: p.uuid, uplink, downlink };
   });
@@ -477,6 +583,8 @@ app.get('/:token', (req, res) => {
   }
   
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('subscription-auto-update-enable', '1');
+  res.setHeader('profile-update-interval', String(Math.max(1, db.settings?.profile_update_interval || 2)));
   res.send(generateSubscription(profile));
 });
 
@@ -496,7 +604,10 @@ app.post('/api/profiles', requireAuth, (req, res) => {
   const db = loadDB();
   const username = normalizeText(req.body.username);
   const server_address = normalizeText(req.body.server_address);
+  const remark = normalizeText(req.body.remark);
   const server_description = normalizeText(req.body.server_description);
+  const limit_gb = Number(req.body.limit_gb ?? 0) || 0;
+  const expire_days = Number(req.body.expire_days ?? 0) || 0;
   if (!username) return res.status(400).json({ detail: 'Username required' });
   if (db.profiles.some(p => p.username.toLowerCase() === username.toLowerCase())) {
     return res.status(409).json({ detail: 'Username already exists' });
@@ -509,11 +620,16 @@ app.post('/api/profiles', requireAuth, (req, res) => {
     username,
     enable: 1,
     flow: '',
-    limit_ip: 0,
-    total_gb: 0,
+    limit_gb: Math.max(0, limit_gb),
+    upload_bytes: 0,
+    download_bytes: 0,
+    expire_days: Math.max(0, Math.floor(expire_days)),
+    expires_at: expire_days > 0 ? new Date(Date.now() + Math.floor(expire_days) * 86400000).toISOString() : '',
     sub_uuid: generateUniqueToken(db),
     inbound_tags: [],
+    inbound_remarks: {},
     server_address: server_address || '',
+    remark: remark || username,
     server_description: server_description || '',
     created_at: now,
     updated_at: now
@@ -651,7 +767,10 @@ app.patch('/api/profiles/:id', requireAuth, (req, res) => {
 
   const username = req.body.username === undefined ? undefined : normalizeText(req.body.username);
   const server_address = req.body.server_address === undefined ? undefined : normalizeText(req.body.server_address);
+  const remark = req.body.remark === undefined ? undefined : normalizeText(req.body.remark);
   const server_description = req.body.server_description === undefined ? undefined : normalizeText(req.body.server_description);
+  const limit_gb = req.body.limit_gb === undefined ? undefined : Number(req.body.limit_gb);
+  const expire_days = req.body.expire_days === undefined ? undefined : Number(req.body.expire_days);
   const flow = req.body.flow === undefined ? undefined : normalizeText(req.body.flow);
 
   if (username !== undefined) {
@@ -662,7 +781,14 @@ app.patch('/api/profiles/:id', requireAuth, (req, res) => {
     profile.username = username;
   }
   if (server_address !== undefined) profile.server_address = server_address;
+  if (remark !== undefined) profile.remark = remark || profile.username;
   if (server_description !== undefined) profile.server_description = server_description;
+  if (limit_gb !== undefined && !Number.isNaN(limit_gb)) profile.limit_gb = Math.max(0, limit_gb);
+  if (expire_days !== undefined && !Number.isNaN(expire_days)) {
+    const days = Math.max(0, Math.floor(expire_days));
+    profile.expire_days = days;
+    profile.expires_at = days > 0 ? new Date(Date.now() + days * 86400000).toISOString() : '';
+  }
   if (flow !== undefined) profile.flow = flow;
   if (req.body.enable !== undefined) profile.enable = req.body.enable ? 1 : 0;
 
@@ -683,9 +809,20 @@ app.patch('/api/settings', requireAuth, (req, res) => {
     req.body.subscription_title === undefined ? undefined : normalizeText(req.body.subscription_title);
   const server_description =
     req.body.server_description === undefined ? undefined : normalizeText(req.body.server_description);
+  const profile_update_interval =
+    req.body.profile_update_interval === undefined ? undefined : Number(req.body.profile_update_interval);
+  const show_traffic_limit =
+    req.body.show_traffic_limit === undefined ? undefined : (req.body.show_traffic_limit ? 1 : 0);
+  const show_expiration =
+    req.body.show_expiration === undefined ? undefined : (req.body.show_expiration ? 1 : 0);
 
   if (subscription_title !== undefined) db.settings.subscription_title = subscription_title;
   if (server_description !== undefined) db.settings.server_description = server_description;
+  if (profile_update_interval !== undefined && !Number.isNaN(profile_update_interval)) {
+    db.settings.profile_update_interval = Math.max(1, Math.floor(profile_update_interval));
+  }
+  if (show_traffic_limit !== undefined) db.settings.show_traffic_limit = show_traffic_limit;
+  if (show_expiration !== undefined) db.settings.show_expiration = show_expiration;
   saveDB(db);
   res.json(db.settings);
 });
@@ -695,6 +832,8 @@ app.get('/api/profiles/:id/subscription', requireAuth, (req, res) => {
   const profile = getProfileById(db, req.params.id);
   if (!profile) return res.status(404).json({ detail: 'Profile not found' });
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('subscription-auto-update-enable', '1');
+  res.setHeader('profile-update-interval', String(Math.max(1, db.settings?.profile_update_interval || 2)));
   res.send(generateSubscription(profile));
 });
 
