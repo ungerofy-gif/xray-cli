@@ -587,7 +587,6 @@ function buildXrayConfig() {
     }
     
     const clients: any[] = [];
-    const users: any[] = [];
     
     for (const profile of db.profiles.filter(p => p.enable && p.inbound_tags?.includes(ib.tag))) {
       if (ib.protocol === 'vmess' || ib.protocol === 'vless') {
@@ -599,12 +598,11 @@ function buildXrayConfig() {
         const ssSettings = (ib.settings as any)?.clients?.[0] || {};
         clients.push({ method: ssSettings.method || 'aes-256-gcm', password: ssSettings.password || profile.uuid, email: profile.username });
       } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
-        users.push({ auth: profile.uuid, email: profile.username });
+        clients.push({ auth: profile.uuid, email: profile.username });
       }
     }
     
     if (clients.length > 0) inbound.settings = { ...inbound.settings, clients };
-    if (users.length > 0) inbound.settings = { ...inbound.settings, users };
     
     config.inbounds.push(inbound);
   }
