@@ -366,8 +366,15 @@ function syncProfileUsageFromStats(db: Database, stats: Record<string, number>):
 function buildXrayConfig() {
   const db = loadDB();
   const xrayInbounds = getXrayInbounds();
+  let existing: any = {};
+  try {
+    if (existsSync(XRAY_CONFIG_PATH)) {
+      existing = JSON.parse(readFileSync(XRAY_CONFIG_PATH, 'utf8')) || {};
+    }
+  } catch {}
   
-  const config = {
+  const config: any = {
+    ...existing,
     log: { access: '/var/log/xray/access.log', error: '/var/log/xray/error.log', loglevel: 'warning' },
     api: { tag: 'api', services: ['LoggerService', 'StatsService'] },
     stats: {},
@@ -376,7 +383,7 @@ function buildXrayConfig() {
       system: { statsInboundUplink: true, statsInboundDownlink: true, statsOutboundUplink: true, statsOutboundDownlink: true }
     },
     inbounds: [] as any[],
-    outbounds: [
+    outbounds: (Array.isArray(existing.outbounds) && existing.outbounds.length > 0) ? existing.outbounds : [
       { tag: 'direct', protocol: 'freedom', settings: {} },
       { tag: 'blocked', protocol: 'blackhole', settings: {} }
     ]
