@@ -534,7 +534,7 @@ function buildXrayConfig() {
       } else if (ib.protocol === 'shadowsocks') {
         const ssSettings = (ib.settings as any)?.clients?.[0] || {};
         clients.push({ method: ssSettings.method || 'aes-256-gcm', password: ssSettings.password || profile.uuid, email: profile.username });
-      } else if (ib.protocol === 'hysteria2') {
+      } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
         clients.push({ auth: profile.uuid, email: profile.username });
       }
     }
