@@ -104,12 +104,31 @@ function setIfPresent(params: URLSearchParams, key: string, value: unknown) {
   if (s) params.set(key, s);
 }
 
+function pickRandomString(values: unknown[]): string {
+  const pool = values.filter(v => typeof v === 'string' && String(v).trim()).map(v => String(v).trim());
+  if (pool.length === 0) return '';
+  return pool[Math.floor(Math.random() * pool.length)] || '';
+}
+
 function pickRealityShortId(realitySettings: any): string {
   if (!realitySettings) return '';
-  if (typeof realitySettings.shortId === 'string' && realitySettings.shortId.trim()) return realitySettings.shortId.trim();
   if (Array.isArray(realitySettings.shortIds)) {
-    const first = realitySettings.shortIds.find((v: any) => typeof v === 'string' && v.trim());
-    if (first) return String(first).trim();
+    const random = pickRandomString(realitySettings.shortIds);
+    if (random) return random;
+  }
+  if (typeof realitySettings.shortId === 'string' && realitySettings.shortId.trim()) return realitySettings.shortId.trim();
+  return '';
+}
+
+function pickRealityServerName(realitySettings: any): string {
+  if (!realitySettings) return '';
+  if (Array.isArray(realitySettings.serverNames)) {
+    const random = pickRandomString(realitySettings.serverNames);
+    if (random) return random;
+  }
+  if (typeof realitySettings.serverName === 'string' && realitySettings.serverName.trim()) return realitySettings.serverName.trim();
+  if (typeof realitySettings.dest === 'string' && realitySettings.dest.trim()) {
+    return realitySettings.dest.trim().split(':')[0] || '';
   }
   return '';
 }
@@ -122,11 +141,16 @@ function applyCommonStreamParams(params: URLSearchParams, streamSettings: XraySt
     'sni',
     streamSettings.tlsSettings?.sni
       || streamSettings.tlsSettings?.serverName
-      || streamSettings.realitySettings?.serverName
-      || streamSettings.realitySettings?.dest
+      || pickRealityServerName(streamSettings.realitySettings)
       || streamSettings.sni
   );
-  setIfPresent(params, 'fp', streamSettings.tlsSettings?.fingerprint || streamSettings.fingerprint);
+  setIfPresent(
+    params,
+    'fp',
+    streamSettings.tlsSettings?.fingerprint
+      || streamSettings.realitySettings?.fingerprint
+      || streamSettings.fingerprint
+  );
   if (streamSettings.tlsSettings?.alpn?.length) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
   else if (Array.isArray(streamSettings.alpn)) params.set('alpn', streamSettings.alpn.join(','));
   else setIfPresent(params, 'alpn', streamSettings.alpn);
