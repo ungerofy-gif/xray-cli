@@ -137,6 +137,12 @@ function setIfPresent(params: URLSearchParams, key: string, value: unknown) {
   if (s) params.set(key, s);
 }
 
+function buildRemarkFragment(title: string, serverDescriptionBase64: string): string {
+  const remark = encodeURIComponent(title);
+  if (!serverDescriptionBase64) return remark;
+  return `${remark}?serverDescription=${encodeURIComponent(serverDescriptionBase64)}`;
+}
+
 function pickRandomString(values: unknown[]): string {
   const pool = values.filter(v => typeof v === 'string' && String(v).trim()).map(v => String(v).trim());
   if (pool.length === 0) return '';
@@ -782,10 +788,9 @@ function generateSubscription(profile: Profile): string {
     const inboundServerDescription = settings.inbound_remarks?.[ib.tag];
     const inboundRemark = settings.inbound_link_remarks?.[ib.tag];
     const title = `${titlePrefix}${inboundRemark || ib.tag}`;
-    const remark = encodeURIComponent(title);
     const effectiveDesc = inboundServerDescription || '';
     const serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
-    const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
+    const remarkFragment = buildRemarkFragment(title, serverDescription);
     
     if (ib.protocol === 'vmess') {
       const vmess: any = {
@@ -827,7 +832,7 @@ function generateSubscription(profile: Profile): string {
       } else if (streamSettings.network === 'quic') {
         if (streamSettings.quicSettings?.header?.type) vmess.type = streamSettings.quicSettings.header.type;
       }
-      if (effectiveDesc) vmess.serverDescription = effectiveDesc;
+      if (effectiveDesc) vmess.meta = { serverDescription: effectiveDesc };
       const encoded = Buffer.from(JSON.stringify(vmess)).toString('base64');
       links.push(`vmess://${encoded}`);
     } else if (ib.protocol === 'vless') {
@@ -835,19 +840,16 @@ function generateSubscription(profile: Profile): string {
       applyCommonStreamParams(params, streamSettings);
       params.set('flow', profile.flow || 'xtls-rprx-vision');
       params.set('encryption', 'none');
-      if (serverDescription) params.set('serverDescription', serverDescription);
-      links.push(`vless://${p.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
+      links.push(`vless://${p.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remarkFragment}`);
     } else if (ib.protocol === 'trojan') {
       const params = new URLSearchParams();
       const pass = inboundSettings?.clients?.[0]?.password || p.uuid;
       applyCommonStreamParams(params, streamSettings);
-      if (serverDescription) params.set('serverDescription', serverDescription);
-      links.push(`trojan://${pass}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
+      links.push(`trojan://${pass}@${serverAddress}:${ib.port}?${params.toString()}#${remarkFragment}`);
     } else if (ib.protocol === 'shadowsocks') {
       const ssSettings = inboundSettings?.clients?.[0] || {};
       const ss = `${ssSettings.method || 'aes-256-gcm'}:${ssSettings.password || p.uuid}@${serverAddress}:${ib.port}`;
-      const query = serverDescription ? `?serverDescription=${encodeURIComponent(serverDescription)}` : '';
-      links.push(`ss://${Buffer.from(ss).toString('base64')}${query}#${remark}`);
+      links.push(`ss://${Buffer.from(ss).toString('base64')}#${remarkFragment}`);
     } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
       const params = new URLSearchParams();
       const auth = p.uuid;
@@ -865,8 +867,7 @@ function generateSubscription(profile: Profile): string {
       }
       if (hySettings.upMbps) params.set('upmbps', String(hySettings.upMbps));
       if (hySettings.downMbps) params.set('downmbps', String(hySettings.downMbps));
-      if (serverDescription) params.set('serverDescription', serverDescription);
-      links.push(`hy2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
+      links.push(`hy2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remarkFragment}`);
     }
   }
   

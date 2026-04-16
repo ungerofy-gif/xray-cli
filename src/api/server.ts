@@ -348,6 +348,12 @@ function setIfPresent(params: URLSearchParams, key: string, value: unknown) {
   if (s) params.set(key, s);
 }
 
+function buildRemarkFragment(title: string, serverDescriptionBase64: string): string {
+  const remark = encodeURIComponent(title);
+  if (!serverDescriptionBase64) return remark;
+  return `${remark}?serverDescription=${encodeURIComponent(serverDescriptionBase64)}`;
+}
+
 function pickRandomString(values: unknown[]): string {
   const pool = values.filter(v => typeof v === 'string' && String(v).trim()).map(v => String(v).trim());
   if (pool.length === 0) return '';
@@ -642,7 +648,7 @@ function generateSubscription(profile: Profile): string {
       }
 
       const effectiveDesc = inboundServerDescription || '';
-      if (effectiveDesc) vmess.serverDescription = effectiveDesc;
+      if (effectiveDesc) vmess.meta = { serverDescription: effectiveDesc };
       
       const encoded = Buffer.from(JSON.stringify(vmess)).toString('base64').replace(/=+$/, '');
       links.push(`vmess://${encoded}`);
@@ -655,8 +661,7 @@ function generateSubscription(profile: Profile): string {
       
       const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
-      if (serverDescription) params.set('serverDescription', serverDescription);
-      const remark = encodeURIComponent(title);
+      const remark = buildRemarkFragment(title, serverDescription);
       links.push(`vless://${p.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
       
     } else if (ib.protocol === 'trojan') {
@@ -665,8 +670,7 @@ function generateSubscription(profile: Profile): string {
       
       const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
-      if (serverDescription) params.set('serverDescription', serverDescription);
-      const remark = encodeURIComponent(title);
+      const remark = buildRemarkFragment(title, serverDescription);
       links.push(`trojan://${password}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
       
     } else if (ib.protocol === 'shadowsocks') {
@@ -679,9 +683,8 @@ function generateSubscription(profile: Profile): string {
       
       const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
-      const remark = encodeURIComponent(title);
-      const query = serverDescription ? `?serverDescription=${encodeURIComponent(serverDescription)}` : '';
-      links.push(`ss://${ssEncoded}@${serverAddress}:${ib.port}${query}#${remark}`);
+      const remark = buildRemarkFragment(title, serverDescription);
+      links.push(`ss://${ssEncoded}@${serverAddress}:${ib.port}#${remark}`);
       
     } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
       const auth = p.uuid;
@@ -702,8 +705,7 @@ function generateSubscription(profile: Profile): string {
       
       const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
-      if (serverDescription) params.set('serverDescription', serverDescription);
-      const remark = encodeURIComponent(title);
+      const remark = buildRemarkFragment(title, serverDescription);
       links.push(`hy2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
       
     } else if (ib.protocol === 'wireguard') {
@@ -716,12 +718,11 @@ function generateSubscription(profile: Profile): string {
       
       const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
-      const remark = encodeURIComponent(title);
+      const remark = buildRemarkFragment(title, serverDescription);
       const paramsWg = new URLSearchParams();
       paramsWg.set('publicKey', publicKey);
       paramsWg.set('allowedIPs', allowedIPs);
       paramsWg.set('endpoint', endpoint);
-      if (serverDescription) paramsWg.set('serverDescription', serverDescription);
       links.push(`wireguard://${privateKey}@${serverAddress}:${ib.port}?${paramsWg.toString()}#${remark}`);
     }
   }
