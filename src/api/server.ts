@@ -80,8 +80,11 @@ interface XrayStreamSettings {
   tlsSettings?: XrayTlsSettings;
   tcpSettings?: XrayTcpSettings;
   wsSettings?: any;
+  xhttpSettings?: any;
   grpcSettings?: any;
   httpSettings?: any;
+  kcpSettings?: any;
+  quicSettings?: any;
   realitySettings?: any;
   sni?: string;
   fingerprint?: string;
@@ -292,6 +295,59 @@ function normalizeInboundSettings(settings: any): any {
   return next;
 }
 
+function setIfPresent(params: URLSearchParams, key: string, value: unknown) {
+  if (value === undefined || value === null) return;
+  const s = String(value).trim();
+  if (s) params.set(key, s);
+}
+
+function applyCommonStreamParams(params: URLSearchParams, streamSettings: XrayStreamSettings) {
+  setIfPresent(params, 'security', streamSettings.security);
+  setIfPresent(params, 'type', streamSettings.network);
+  setIfPresent(params, 'sni', streamSettings.tlsSettings?.sni || streamSettings.tlsSettings?.serverName || streamSettings.sni);
+  setIfPresent(params, 'fp', streamSettings.tlsSettings?.fingerprint || streamSettings.fingerprint);
+  if (streamSettings.tlsSettings?.alpn?.length) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
+  else if (Array.isArray(streamSettings.alpn)) params.set('alpn', streamSettings.alpn.join(','));
+  else setIfPresent(params, 'alpn', streamSettings.alpn);
+
+  setIfPresent(params, 'pbk', streamSettings.realitySettings?.publicKey);
+  setIfPresent(params, 'sid', streamSettings.realitySettings?.shortId);
+  setIfPresent(params, 'spx', streamSettings.realitySettings?.spiderX);
+
+  if (streamSettings.network === 'ws') {
+    setIfPresent(params, 'path', streamSettings.wsSettings?.path);
+    setIfPresent(params, 'host', streamSettings.wsSettings?.headers?.Host || streamSettings.wsSettings?.host);
+    setIfPresent(params, 'eh', streamSettings.wsSettings?.headers ? JSON.stringify(streamSettings.wsSettings.headers) : '');
+  } else if (streamSettings.network === 'http' || streamSettings.network === 'h2') {
+    const httpPath = Array.isArray(streamSettings.httpSettings?.path)
+      ? streamSettings.httpSettings.path[0]
+      : streamSettings.httpSettings?.path;
+    const httpHost = Array.isArray(streamSettings.httpSettings?.host)
+      ? streamSettings.httpSettings.host[0]
+      : streamSettings.httpSettings?.host;
+    setIfPresent(params, 'path', httpPath);
+    setIfPresent(params, 'host', httpHost);
+  } else if (streamSettings.network === 'xhttp') {
+    setIfPresent(params, 'path', streamSettings.xhttpSettings?.path);
+    setIfPresent(params, 'host', streamSettings.xhttpSettings?.host);
+    setIfPresent(params, 'mode', streamSettings.xhttpSettings?.mode);
+    setIfPresent(params, 'xmux', streamSettings.xhttpSettings?.xmux ? JSON.stringify(streamSettings.xhttpSettings.xmux) : '');
+  } else if (streamSettings.network === 'grpc') {
+    setIfPresent(params, 'serviceName', streamSettings.grpcSettings?.serviceName);
+    setIfPresent(params, 'mode', streamSettings.grpcSettings?.mode);
+    setIfPresent(params, 'authority', streamSettings.grpcSettings?.authority);
+  } else if (streamSettings.network === 'tcp') {
+    setIfPresent(params, 'headerType', streamSettings.tcpSettings?.header?.type);
+  } else if (streamSettings.network === 'kcp') {
+    setIfPresent(params, 'headerType', streamSettings.kcpSettings?.header?.type);
+    setIfPresent(params, 'seed', streamSettings.kcpSettings?.seed);
+  } else if (streamSettings.network === 'quic') {
+    setIfPresent(params, 'quicSecurity', streamSettings.quicSettings?.security);
+    setIfPresent(params, 'key', streamSettings.quicSettings?.key);
+    setIfPresent(params, 'headerType', streamSettings.quicSettings?.header?.type);
+  }
+}
+
 function syncProfileUsageFromStats(db: Database, stats: Record<string, number>): boolean {
   let changed = false;
   for (const p of db.profiles) {
@@ -434,13 +490,28 @@ function generateSubscription(profile: Profile): string {
         if (streamSettings.tlsSettings.alpn) vmess.alpn = streamSettings.tlsSettings.alpn;
       }
       
-      if (streamSettings.wsSettings) {
-        if (streamSettings.wsSettings.path) vmess.path = streamSettings.wsSettings.path;
-        if (streamSettings.wsSettings.headers?.Host) vmess.host = streamSettings.wsSettings.headers.Host;
-      }
-      
-      if (streamSettings.grpcSettings?.serviceName) {
-        vmess.path = streamSettings.grpcSettings.serviceName;
+      if (streamSettings.network === 'ws') {
+        if (streamSettings.wsSettings?.path) vmess.path = streamSettings.wsSettings.path;
+        if (streamSettings.wsSettings?.headers?.Host) vmess.host = streamSettings.wsSettings.headers.Host;
+      } else if (streamSettings.network === 'http' || streamSettings.network === 'h2') {
+        const httpPath = Array.isArray(streamSettings.httpSettings?.path) ? streamSettings.httpSettings.path[0] : streamSettings.httpSettings?.path;
+        const httpHost = Array.isArray(streamSettings.httpSettings?.host) ? streamSettings.httpSettings.host[0] : streamSettings.httpSettings?.host;
+        if (httpPath) vmess.path = httpPath;
+        if (httpHost) vmess.host = httpHost;
+      } else if (streamSettings.network === 'xhttp') {
+        if (streamSettings.xhttpSettings?.path) vmess.path = streamSettings.xhttpSettings.path;
+        if (streamSettings.xhttpSettings?.host) vmess.host = streamSettings.xhttpSettings.host;
+        if (streamSettings.xhttpSettings?.mode) vmess.mode = streamSettings.xhttpSettings.mode;
+      } else if (streamSettings.network === 'grpc') {
+        if (streamSettings.grpcSettings?.serviceName) vmess.path = streamSettings.grpcSettings.serviceName;
+        if (streamSettings.grpcSettings?.authority) vmess.host = streamSettings.grpcSettings.authority;
+      } else if (streamSettings.network === 'tcp') {
+        if (streamSettings.tcpSettings?.header?.type) vmess.type = streamSettings.tcpSettings.header.type;
+      } else if (streamSettings.network === 'kcp') {
+        if (streamSettings.kcpSettings?.header?.type) vmess.type = streamSettings.kcpSettings.header.type;
+        if (streamSettings.kcpSettings?.seed) vmess.path = streamSettings.kcpSettings.seed;
+      } else if (streamSettings.network === 'quic') {
+        if (streamSettings.quicSettings?.header?.type) vmess.type = streamSettings.quicSettings.header.type;
       }
 
       const effectiveDesc = p.server_description || globalServerDescription;
@@ -450,26 +521,7 @@ function generateSubscription(profile: Profile): string {
       links.push(`vmess://${encoded}`);
       
     } else if (ib.protocol === 'vless') {
-      if (streamSettings.security) params.set('security', streamSettings.security);
-      if (streamSettings.network) params.set('type', streamSettings.network);
-      if (streamSettings.tlsSettings?.sni) params.set('sni', streamSettings.tlsSettings.sni);
-      if (streamSettings.tlsSettings?.serverName) params.set('sni', streamSettings.tlsSettings.serverName);
-      if (streamSettings.tlsSettings?.fingerprint) params.set('fp', streamSettings.tlsSettings.fingerprint);
-      if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
-      if (streamSettings.realitySettings?.publicKey) params.set('pbk', streamSettings.realitySettings.publicKey);
-      if (streamSettings.realitySettings?.shortId) params.set('sid', streamSettings.realitySettings.shortId);
-      if (streamSettings.realitySettings?.spiderX) params.set('spx', streamSettings.realitySettings.spiderX);
-      
-      if (streamSettings.wsSettings) {
-        if (streamSettings.wsSettings.path) params.set('path', streamSettings.wsSettings.path);
-        if (streamSettings.wsSettings.headers?.Host) params.set('host', streamSettings.wsSettings.headers.Host);
-      }
-      
-      if (streamSettings.httpSettings?.path) params.set('path', streamSettings.httpSettings.path);
-      if (streamSettings.httpSettings?.host) params.set('host', streamSettings.httpSettings.host);
-      
-      if (streamSettings.grpcSettings?.serviceName) params.set('serviceName', streamSettings.grpcSettings.serviceName);
-      if (streamSettings.grpcSettings?.mode) params.set('mode', streamSettings.grpcSettings.mode);
+      applyCommonStreamParams(params, streamSettings);
       
       params.set('flow', 'xtls-rprx-vision');
       params.set('encryption', 'none');
@@ -482,22 +534,7 @@ function generateSubscription(profile: Profile): string {
       
     } else if (ib.protocol === 'trojan') {
       const password = settings.clients?.[0]?.password || p.uuid;
-      
-      if (streamSettings.security) params.set('security', streamSettings.security);
-      if (streamSettings.network) params.set('type', streamSettings.network);
-      if (streamSettings.tlsSettings?.sni) params.set('sni', streamSettings.tlsSettings.sni);
-      if (streamSettings.tlsSettings?.serverName) params.set('sni', streamSettings.tlsSettings.serverName);
-      if (streamSettings.tlsSettings?.fingerprint) params.set('fp', streamSettings.tlsSettings.fingerprint);
-      if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
-      
-      if (streamSettings.wsSettings) {
-        if (streamSettings.wsSettings.path) params.set('path', streamSettings.wsSettings.path);
-        if (streamSettings.wsSettings.headers?.Host) params.set('host', streamSettings.wsSettings.headers.Host);
-      }
-      
-      if (streamSettings.grpcSettings?.serviceName) {
-        params.set('serviceName', streamSettings.grpcSettings.serviceName);
-      }
+      applyCommonStreamParams(params, streamSettings);
       
       const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
@@ -521,15 +558,7 @@ function generateSubscription(profile: Profile): string {
       
     } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
       const auth = p.uuid;
-      
-      if (streamSettings.sni) params.set('sni', streamSettings.sni);
-      if (streamSettings.tlsSettings?.sni) params.set('sni', streamSettings.tlsSettings.sni);
-      if (streamSettings.tlsSettings?.serverName) params.set('sni', streamSettings.tlsSettings.serverName);
-      if (streamSettings.fingerprint) params.set('fp', streamSettings.fingerprint);
-      if (streamSettings.tlsSettings?.fingerprint) params.set('fp', streamSettings.tlsSettings.fingerprint);
-      if (Array.isArray(streamSettings.alpn)) params.set('alpn', streamSettings.alpn.join(','));
-      else if (typeof streamSettings.alpn === 'string') params.set('alpn', streamSettings.alpn);
-      if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
+      applyCommonStreamParams(params, streamSettings);
       if (settings.obfs) params.set('obfs', settings.obfs);
       if (settings.obfsPassword) params.set('obfs-password', settings.obfsPassword);
       if (settings.upMbps) params.set('upmbps', String(settings.upMbps));
