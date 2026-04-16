@@ -442,6 +442,9 @@ function generateSubscription(profile: Profile): string {
       if (streamSettings.grpcSettings?.serviceName) {
         vmess.path = streamSettings.grpcSettings.serviceName;
       }
+
+      const effectiveDesc = p.server_description || globalServerDescription;
+      if (effectiveDesc) vmess.serverDescription = effectiveDesc;
       
       const encoded = Buffer.from(JSON.stringify(vmess)).toString('base64').replace(/=+$/, '');
       links.push(`vmess://${encoded}`);
@@ -473,9 +476,9 @@ function generateSubscription(profile: Profile): string {
       
       const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
+      if (serverDescription) params.set('serverDescription', serverDescription);
       const remark = encodeURIComponent(title);
-      const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
-      links.push(`vless://${p.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
+      links.push(`vless://${p.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
       
     } else if (ib.protocol === 'trojan') {
       const password = settings.clients?.[0]?.password || p.uuid;
@@ -498,9 +501,9 @@ function generateSubscription(profile: Profile): string {
       
       const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
+      if (serverDescription) params.set('serverDescription', serverDescription);
       const remark = encodeURIComponent(title);
-      const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
-      links.push(`trojan://${password}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
+      links.push(`trojan://${password}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
       
     } else if (ib.protocol === 'shadowsocks') {
       const ssSettings = settings.clients?.[0] || {};
@@ -513,8 +516,8 @@ function generateSubscription(profile: Profile): string {
       const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
-      const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
-      links.push(`ss://${ssEncoded}@${serverAddress}:${ib.port}#${remark}${descParam}`);
+      const query = serverDescription ? `?serverDescription=${encodeURIComponent(serverDescription)}` : '';
+      links.push(`ss://${ssEncoded}@${serverAddress}:${ib.port}${query}#${remark}`);
       
     } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
       const auth = p.uuid;
@@ -534,9 +537,9 @@ function generateSubscription(profile: Profile): string {
       
       const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
+      if (serverDescription) params.set('serverDescription', serverDescription);
       const remark = encodeURIComponent(title);
-      const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
-      links.push(`hy2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
+      links.push(`hy2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
       
     } else if (ib.protocol === 'wireguard') {
       const wgSettings = settings || {};
@@ -549,8 +552,12 @@ function generateSubscription(profile: Profile): string {
       const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
-      const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
-      links.push(`wireguard://${privateKey}@${serverAddress}:${ib.port}?publicKey=${publicKey}&allowedIPs=${encodeURIComponent(allowedIPs)}&endpoint=${encodeURIComponent(endpoint)}#${remark}${descParam}`);
+      const paramsWg = new URLSearchParams();
+      paramsWg.set('publicKey', publicKey);
+      paramsWg.set('allowedIPs', allowedIPs);
+      paramsWg.set('endpoint', endpoint);
+      if (serverDescription) paramsWg.set('serverDescription', serverDescription);
+      links.push(`wireguard://${privateKey}@${serverAddress}:${ib.port}?${paramsWg.toString()}#${remark}`);
     }
   }
   

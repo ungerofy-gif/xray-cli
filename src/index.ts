@@ -627,6 +627,7 @@ function generateSubscription(profile: Profile): string {
       if (streamSettings.wsSettings?.path) vmess.path = streamSettings.wsSettings.path;
       if (streamSettings.wsSettings?.headers?.Host) vmess.host = streamSettings.wsSettings.headers.Host;
       if (streamSettings.grpcSettings?.serviceName) vmess.path = streamSettings.grpcSettings.serviceName;
+      if (effectiveDesc) vmess.serverDescription = effectiveDesc;
       const encoded = Buffer.from(JSON.stringify(vmess)).toString('base64');
       links.push(`vmess://${encoded}`);
     } else if (ib.protocol === 'vless') {
@@ -646,7 +647,8 @@ function generateSubscription(profile: Profile): string {
       if (streamSettings.grpcSettings?.mode) params.set('mode', streamSettings.grpcSettings.mode);
       params.set('flow', profile.flow || 'xtls-rprx-vision');
       params.set('encryption', 'none');
-      links.push(`vless://${p.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
+      if (serverDescription) params.set('serverDescription', serverDescription);
+      links.push(`vless://${p.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
     } else if (ib.protocol === 'trojan') {
       const params = new URLSearchParams();
       const pass = inboundSettings?.clients?.[0]?.password || p.uuid;
@@ -659,11 +661,13 @@ function generateSubscription(profile: Profile): string {
       if (streamSettings.wsSettings?.path) params.set('path', streamSettings.wsSettings.path);
       if (streamSettings.wsSettings?.headers?.Host) params.set('host', streamSettings.wsSettings.headers.Host);
       if (streamSettings.grpcSettings?.serviceName) params.set('serviceName', streamSettings.grpcSettings.serviceName);
-      links.push(`trojan://${pass}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
+      if (serverDescription) params.set('serverDescription', serverDescription);
+      links.push(`trojan://${pass}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
     } else if (ib.protocol === 'shadowsocks') {
       const ssSettings = inboundSettings?.clients?.[0] || {};
       const ss = `${ssSettings.method || 'aes-256-gcm'}:${ssSettings.password || p.uuid}@${serverAddress}:${ib.port}`;
-      links.push(`ss://${Buffer.from(ss).toString('base64')}#${remark}${descParam}`);
+      const query = serverDescription ? `?serverDescription=${encodeURIComponent(serverDescription)}` : '';
+      links.push(`ss://${Buffer.from(ss).toString('base64')}${query}#${remark}`);
     } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
       const params = new URLSearchParams();
       const auth = p.uuid;
@@ -679,7 +683,8 @@ function generateSubscription(profile: Profile): string {
       if (inboundSettings.obfsPassword) params.set('obfs-password', inboundSettings.obfsPassword);
       if (inboundSettings.upMbps) params.set('upmbps', String(inboundSettings.upMbps));
       if (inboundSettings.downMbps) params.set('downmbps', String(inboundSettings.downMbps));
-      links.push(`hy2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
+      if (serverDescription) params.set('serverDescription', serverDescription);
+      links.push(`hy2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
     }
   }
   
