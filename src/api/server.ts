@@ -22,8 +22,6 @@ interface Profile {
   expire_days: number;
   expires_at: string;
   sub_uuid: string;
-  install_limit: number;
-  install_code: string;
   inbound_tags: string[];
   inbound_remarks: Record<string, string>;
   server_address: string;
@@ -109,8 +107,6 @@ function loadDB(): Database {
         download_bytes: Number(p.download_bytes ?? 0) || 0,
         expire_days: Number(p.expire_days ?? 0) || 0,
         expires_at: p.expires_at || '',
-        install_limit: Number(p.install_limit ?? 1) || 1,
-        install_code: p.install_code || '',
         inbound_remarks: p.inbound_remarks || {},
         server_address: p.server_address || '',
         remark: p.remark || p.username || '',
@@ -172,14 +168,6 @@ function getProfileById(db: Database, idParam: unknown): Profile | null {
   const id = Number(idParam);
   if (!Number.isInteger(id) || id <= 0) return null;
   return db.profiles.find(p => p.id === id) || null;
-}
-
-function buildSubscriptionUrl(req: express.Request, profile: Profile): string {
-  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'http';
-  const host = req.headers.host || `${API_HOST}:${API_PORT}`;
-  const base = `${proto}://${host}/${profile.sub_uuid}`;
-  if (profile.install_code) return `${base}?installid=${encodeURIComponent(profile.install_code)}`;
-  return base;
 }
 
 function saveConfigAndRestart(): void {
@@ -641,8 +629,6 @@ app.post('/api/profiles', requireAuth, (req, res) => {
     expire_days: Math.max(0, Math.floor(expire_days)),
     expires_at: expire_days > 0 ? new Date(Date.now() + Math.floor(expire_days) * 86400000).toISOString() : '',
     sub_uuid: generateUniqueToken(db),
-    install_limit: 1,
-    install_code: '',
     inbound_tags: [],
     inbound_remarks: {},
     server_address: server_address || '',
@@ -788,7 +774,6 @@ app.patch('/api/profiles/:id', requireAuth, (req, res) => {
   const server_description = req.body.server_description === undefined ? undefined : normalizeText(req.body.server_description);
   const limit_gb = req.body.limit_gb === undefined ? undefined : Number(req.body.limit_gb);
   const expire_days = req.body.expire_days === undefined ? undefined : Number(req.body.expire_days);
-  const install_limit = req.body.install_limit === undefined ? undefined : Number(req.body.install_limit);
   const flow = req.body.flow === undefined ? undefined : normalizeText(req.body.flow);
 
   if (username !== undefined) {
@@ -806,9 +791,6 @@ app.patch('/api/profiles/:id', requireAuth, (req, res) => {
     const days = Math.max(0, Math.floor(expire_days));
     profile.expire_days = days;
     profile.expires_at = days > 0 ? new Date(Date.now() + days * 86400000).toISOString() : '';
-  }
-  if (install_limit !== undefined && !Number.isNaN(install_limit)) {
-    profile.install_limit = Math.max(1, Math.floor(install_limit));
   }
   if (flow !== undefined) profile.flow = flow;
   if (req.body.enable !== undefined) profile.enable = req.body.enable ? 1 : 0;
@@ -846,58 +828,6 @@ app.patch('/api/settings', requireAuth, (req, res) => {
   if (show_expiration !== undefined) db.settings.show_expiration = show_expiration;
   saveDB(db);
   res.json(db.settings);
-});
-
-app.get('/api/profiles/:id/link', requireAuth, (req, res) => {
-  const db = loadDB();
-  const profile = getProfileById(db, req.params.id);
-  if (!profile) return res.status(404).json({ detail: 'Profile not found' });
-  res.json({
-    subscription_url: buildSubscriptionUrl(req, profile),
-    install_limit: profile.install_limit || 1,
-    install_code: profile.install_code || ''
-  });
-});
-
-app.post('/api/profiles/:id/limited-link', requireAuth, async (req, res) => {
-  const db = loadDB();
-  const profile = getProfileById(db, req.params.id);
-  if (!profile) return res.status(404).json({ detail: 'Profile not found' });
-
-  const provider_code = normalizeText(req.body.provider_code);
-  const auth_key = normalizeText(req.body.auth_key);
-  const install_limit = Math.max(1, Math.floor(Number(req.body.install_limit ?? profile.install_limit ?? 1) || 1));
-
-  if (!provider_code || !auth_key) {
-    return res.status(400).json({ detail: 'provider_code and auth_key are required' });
-  }
-
-  const url = new URL('https://api.happ-proxy.com/api/add-install');
-  url.searchParams.set('provider_code', provider_code);
-  url.searchParams.set('auth_key', auth_key);
-  url.searchParams.set('install_limit', String(install_limit));
-
-  try {
-    const response = await fetch(url.toString(), { method: 'GET' });
-    const data: any = await response.json().catch(() => ({}));
-
-    if (!response.ok || data?.rc !== 1 || !data?.install_code) {
-      return res.status(502).json({ detail: data?.msg || 'Failed to create Happ limited link' });
-    }
-
-    profile.install_limit = install_limit;
-    profile.install_code = String(data.install_code);
-    profile.updated_at = new Date().toISOString();
-    saveDB(db);
-
-    return res.json({
-      install_limit: profile.install_limit,
-      install_code: profile.install_code,
-      subscription_url: buildSubscriptionUrl(req, profile)
-    });
-  } catch (error: any) {
-    return res.status(502).json({ detail: error?.message || 'Happ API request failed' });
-  }
 });
 
 app.get('/api/profiles/:id/subscription', requireAuth, (req, res) => {
