@@ -246,6 +246,7 @@ Wants=network.target
 Type=simple
 User=root
 WorkingDirectory=/usr/local/xray-cli
+EnvironmentFile=-/etc/default/xraycli-api
 Environment=XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json
 Environment=API_HOST=127.0.0.1
 Environment=API_PORT=2053
