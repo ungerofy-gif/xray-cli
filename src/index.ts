@@ -357,13 +357,49 @@ function clear() {
   console.clear();
 }
 
-const PANEL_WIDTH = 76;
+const MIN_PANEL_WIDTH = 56;
+const MAX_PANEL_WIDTH = 96;
 
 function fitText(value: string, width: number): string {
-  const chars = Array.from(value);
-  if (chars.length <= width) return value;
+  const text = value || '';
+  const chars = Array.from(text);
+  if (chars.length <= width) return text;
+  if (width <= 1) return '';
   if (width <= 3) return chars.slice(0, width).join('');
-  return chars.slice(0, width - 3).join('') + '...';
+  return `${chars.slice(0, width - 1).join('')}…`;
+}
+
+function wrapText(value: string, width: number): string[] {
+  const normalized = (value || '').replace(/\t/g, '  ');
+  if (width <= 1) return [fitText(normalized, 1)];
+  const sourceLines = normalized.split('\n');
+  const out: string[] = [];
+
+  for (const rawLine of sourceLines) {
+    if (!rawLine.trim()) {
+      out.push('');
+      continue;
+    }
+    let remaining = rawLine;
+    while (Array.from(remaining).length > width) {
+      const slice = Array.from(remaining).slice(0, width + 1).join('');
+      const breakAt = Math.max(slice.lastIndexOf(' '), slice.lastIndexOf('-'));
+      if (breakAt > Math.floor(width * 0.4)) {
+        out.push(slice.slice(0, breakAt).trimEnd());
+        remaining = remaining.slice(breakAt + 1).trimStart();
+      } else {
+        out.push(Array.from(remaining).slice(0, width).join(''));
+        remaining = Array.from(remaining).slice(width).join('').trimStart();
+      }
+    }
+    out.push(remaining);
+  }
+  return out;
+}
+
+function panelWidth(): number {
+  const columns = process.stdout.columns || 80;
+  return Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, columns - 4));
 }
 
 function centerLine(text: string): string {
@@ -373,15 +409,22 @@ function centerLine(text: string): string {
 }
 
 function renderPanel(title: string, lines: string[] = []) {
-  const inner = PANEL_WIDTH - 4;
-  const top = `+${'-'.repeat(PANEL_WIDTH - 2)}+`;
+  const width = panelWidth();
+  const inner = width - 4;
+  const top = `+${'-'.repeat(width - 2)}+`;
   const fullTitle = title === 'XRAY CLI' ? title : `XRAY CLI | ${title}`;
+
+  const normalized: string[] = [];
+  for (const line of lines) {
+    normalized.push(...wrapText(line, inner));
+  }
 
   console.log('');
   console.log(centerLine(top));
   console.log(centerLine(`| ${fitText(fullTitle, inner).padEnd(inner, ' ')} |`));
+  console.log(centerLine(`| ${'-'.repeat(inner)} |`));
   console.log(centerLine(top));
-  for (const line of lines) {
+  for (const line of normalized) {
     console.log(centerLine(`| ${fitText(line, inner).padEnd(inner, ' ')} |`));
   }
   console.log(centerLine(top));
@@ -389,7 +432,19 @@ function renderPanel(title: string, lines: string[] = []) {
 }
 
 function promptCentered(question: string): string {
-  return prompt(centerLine(question)) || '';
+  return prompt(centerLine(fitText(question, panelWidth() - 2))) || '';
+}
+
+function showMessage(message: string, ok = true) {
+  const prefix = ok ? '[OK]' : '[ERR]';
+  renderPanel('Status', [`${prefix} ${message}`]);
+}
+
+function getProfileByUsername(username: string): Profile | undefined {
+  const normalized = username.trim().toLowerCase();
+  if (!normalized) return undefined;
+  const db = loadDB();
+  return db.profiles.find(p => p.username.toLowerCase() === normalized);
 }
 
 function getProfiles() {
@@ -888,20 +943,19 @@ async function dashboard() {
 
   const lines = [
     `Status: ${xrayStatus === 'active' ? 'RUNNING' : 'STOPPED'}`,
-    `Users: ${profiles.length}`,
+    `Profiles: ${profiles.length}`,
     `Inbounds: ${xrayInbounds.length}`,
     '',
-    'Users',
-    '-'.repeat(28),
+    'Recent Profiles',
   ];
 
   for (const p of profiles) {
-    const status = p.enable ? '[ON]' : '[OFF]';
+    const status = p.enable ? 'ON ' : 'OFF';
     const tagCount = p.inbound_tags?.length || 0;
-    const expTs = p.expires_at ? Math.floor(new Date(p.expires_at).getTime() / 1000) : 0;
-    lines.push(`${status} ${fitText(p.username, 15).padEnd(15, ' ')} ${(p.sub_uuid || '').slice(0, 10)}  ${tagCount} inb  ${p.limit_gb}GB exp:${expTs ? new Date(expTs * 1000).toISOString().slice(0, 10) : 'none'}`);
+    const exp = p.expires_at ? p.expires_at.slice(0, 10) : 'none';
+    lines.push(`${status}  ${p.username}  |  ${tagCount} inbounds  |  ${p.limit_gb} GB  |  exp ${exp}`);
   }
-  if (profiles.length === 0) lines.push('No users yet');
+  if (profiles.length === 0) lines.push('No profiles yet.');
 
   renderPanel('Dashboard', lines);
   promptCentered('Press Enter to continue...');
@@ -910,12 +964,19 @@ async function dashboard() {
 async function listProfiles() {
   const profiles = getProfiles();
 
-  const lines = ['ID   USERNAME         TOKEN       EN  LIMIT  EXP(D)', '-'.repeat(58)];
+  const lines = ['Profiles', ''];
   if (profiles.length === 0) {
     lines.push('No profiles found.');
   } else {
-    for (const p of profiles) {
-      lines.push(`${String(p.id).padEnd(4, ' ')} ${fitText(p.username, 15).padEnd(15, ' ')} ${(p.sub_uuid || '').slice(0, 10).padEnd(11, ' ')} ${p.enable ? 'Y ' : 'N '} ${String(p.limit_gb).padStart(5, ' ')}G ${String(p.expire_days || 0).padStart(6, ' ')}`);
+    profiles.forEach((p, idx) => {
+      const state = p.enable ? 'Enabled' : 'Disabled';
+      lines.push(`${idx + 1}. ${p.username} (${state})`);
+      lines.push(`   Token: ${(p.sub_uuid || '').slice(0, 10)}  |  Limit: ${p.limit_gb} GB  |  Expire: ${p.expire_days || 0}d`);
+      lines.push(`   Inbounds: ${(p.inbound_tags || []).length}`);
+      lines.push('');
+    });
+    if (lines[lines.length - 1] === '') {
+      lines.pop();
     }
   }
   renderPanel('Profiles', lines);
@@ -931,13 +992,13 @@ async function manageInbounds(profileId: number) {
     if (!profile) return;
     const xrayInbounds = getXrayInbounds();
     const currentTags = profile.inbound_tags || [];
-    const lines = ['Available inbounds', '-'.repeat(20)];
+    const lines = ['Available Inbounds', ''];
 
     const globalInboundRemarks = getSettings().inbound_link_remarks || {};
     for (const ib of xrayInbounds) {
       const selected = currentTags.includes(ib.tag) ? '[x]' : '[ ]';
       const inboundRemark = globalInboundRemarks[ib.tag] || '-';
-      lines.push(`${selected} ${fitText(ib.tag, 12).padEnd(12, ' ')} (${ib.protocol}:${ib.port}) ${fitText(inboundRemark, 20)}`);
+      lines.push(`${selected} ${ib.tag}  |  ${ib.protocol}:${ib.port}  |  ${inboundRemark}`);
     }
     lines.push('');
     lines.push(`Current tags: ${currentTags.length > 0 ? currentTags.join(', ') : 'none'}`);
@@ -957,17 +1018,17 @@ async function manageInbounds(profileId: number) {
       
       const exists = xrayInbounds.find(ib => ib.tag === tag);
       if (!exists) {
-        console.log(centerLine('Tag not found in Xray config'));
+        showMessage('Inbound tag not found in Xray config', false);
         promptCentered('Press Enter to continue...');
         continue;
       }
       
       if (!currentTags.includes(tag)) {
         setProfileInboundTags(profileId, [...currentTags, tag]);
-        console.log('✓ Inbound added');
+        showMessage('Inbound added');
         reloadXray();
       } else {
-        console.log('Tag already added');
+        showMessage('Inbound already added', false);
       }
     } else if (choice === '2') {
       const tag = promptCentered('Inbound tag to remove: ');
@@ -975,18 +1036,18 @@ async function manageInbounds(profileId: number) {
       
       if (currentTags.includes(tag)) {
         setProfileInboundTags(profileId, currentTags.filter(t => t !== tag));
-        console.log('✓ Inbound removed');
+        showMessage('Inbound removed');
         reloadXray();
       } else {
-        console.log('Tag not in profile');
+        showMessage('Inbound tag not assigned to this username', false);
       }
     } else if (choice === '3') {
       setProfileInboundTags(profileId, xrayInbounds.map(ib => ib.tag));
-      console.log('✓ All inbounds added');
+      showMessage('All inbounds added');
       reloadXray();
     } else if (choice === '4') {
       setProfileInboundTags(profileId, []);
-      console.log('✓ All inbounds removed');
+      showMessage('All inbounds removed');
       reloadXray();
     } else {
       break;
@@ -1003,11 +1064,9 @@ async function subscriptionUrl(profileId: number) {
   clear();
   renderPanel(`Subscription | ${profile.username}`, [
     'Base64',
-    '-'.repeat(10),
     sub,
     '',
     'Decoded',
-    '-'.repeat(10),
     Buffer.from(sub, 'base64').toString()
   ]);
   promptCentered('Press Enter to continue...');
@@ -1102,8 +1161,8 @@ async function main() {
       
       renderPanel('Profile Actions', [
         '1. Add Profile',
-        '2. Delete Profile',
-        '3. Toggle Enable',
+        '2. Delete by Username',
+        '3. Toggle by Username',
         '4. Manage Inbounds',
         '5. View Subscription',
         '0. Back'
@@ -1127,7 +1186,7 @@ async function main() {
             limitGb || 0,
             expireDays || 0
           );
-          console.log(`✓ Profile created: ${profile.username}`);
+          showMessage(`Profile created: ${profile.username}`);
           if (addAllInbounds.toLowerCase() === 'y') {
             reloadXray();
           } else {
@@ -1138,26 +1197,41 @@ async function main() {
           }
         }
       } else if (sub === '2') {
-        const id = promptCentered('Profile ID to delete: ');
-        if (deleteProfile(parseInt(id))) {
-          console.log('✓ Profile deleted');
+        const username = promptCentered('Username to delete: ');
+        const profile = getProfileByUsername(username);
+        if (profile && deleteProfile(profile.id)) {
+          showMessage(`Profile deleted: ${profile.username}`);
           reloadXray();
+        } else {
+          showMessage('Username not found', false);
         }
       } else if (sub === '3') {
-        const id = promptCentered('Profile ID to toggle: ');
-        const profile = getProfile(parseInt(id));
+        const username = promptCentered('Username to toggle: ');
+        const profile = getProfileByUsername(username);
         if (profile) {
           profile.enable = profile.enable ? 0 : 1;
-          updateProfile(parseInt(id), { enable: profile.enable });
-          console.log(`✓ Profile ${profile.enable ? 'enabled' : 'disabled'}`);
+          updateProfile(profile.id, { enable: profile.enable });
+          showMessage(`Username ${profile.username} ${profile.enable ? 'enabled' : 'disabled'}`);
           reloadXray();
+        } else {
+          showMessage('Username not found', false);
         }
       } else if (sub === '4') {
-        const id = promptCentered('Profile ID: ');
-        await manageInbounds(parseInt(id));
+        const username = promptCentered('Username: ');
+        const profile = getProfileByUsername(username);
+        if (!profile) {
+          showMessage('Username not found', false);
+        } else {
+          await manageInbounds(profile.id);
+        }
       } else if (sub === '5') {
-        const id = promptCentered('Profile ID: ');
-        await subscriptionUrl(parseInt(id));
+        const username = promptCentered('Username: ');
+        const profile = getProfileByUsername(username);
+        if (!profile) {
+          showMessage('Username not found', false);
+        } else {
+          await subscriptionUrl(profile.id);
+        }
       }
     } else if (choice === '3') {
       await xrayManagement();
@@ -1190,24 +1264,24 @@ async function main() {
         if (s === '1') {
           const title = promptCentered('Subscription title: ');
           updateSettings({ subscription_title: title });
-          console.log('✓ Title updated');
+          showMessage('Subscription title updated');
         } else if (s === '2') {
           const desc = promptCentered('Announcement: ');
           updateSettings({ announcement: desc });
-          console.log('✓ Announcement updated');
+          showMessage('Announcement updated');
         } else if (s === '3') {
           const hours = Number(promptCentered(`Auto update interval hours (${settings.profile_update_interval || 2}): `) || '2');
           updateSettings({ profile_update_interval: Math.max(1, Math.floor(hours || 2)) });
-          console.log('✓ Update interval saved');
+          showMessage('Auto update interval saved');
         } else if (s === '4') {
           updateSettings({ show_traffic_limit: settings.show_traffic_limit ? 0 : 1 });
-          console.log('✓ Traffic-limit display updated');
+          showMessage('Traffic-limit display updated');
         } else if (s === '5') {
           updateSettings({ show_expiration: settings.show_expiration ? 0 : 1 });
-          console.log('✓ Expiration display updated');
+          showMessage('Expiration display updated');
         } else if (s === '6') {
-          const id = promptCentered('Profile ID: ');
-          const profile = getProfile(parseInt(id));
+          const username = promptCentered('Username: ');
+          const profile = getProfileByUsername(username);
           if (profile) {
             const newAddr = promptCentered(`Server address (${profile.server_address || 'auto'}): `);
             const newRemark = promptCentered(`Remark (${profile.remark || profile.username}): `);
@@ -1215,33 +1289,33 @@ async function main() {
             const newExpireDays = promptCentered(`Expiration days (${profile.expire_days || 0}): `);
             if (newAddr !== '' || newRemark !== '' || newLimitGb !== '' || newExpireDays !== '') {
               updateProfileSettings(
-                parseInt(id),
+                profile.id,
                 newAddr || profile.server_address,
                 newRemark || profile.remark,
                 newLimitGb === '' ? profile.limit_gb : Number(newLimitGb),
                 newExpireDays === '' ? profile.expire_days : Number(newExpireDays)
               );
-              console.log('✓ Profile updated');
+              showMessage(`Profile updated: ${profile.username}`);
             }
           } else {
-            console.log('✗ Profile not found');
+            showMessage('Username not found', false);
           }
         } else if (s === '7') {
           const tag = promptCentered('Inbound tag: ');
           const xrayInbounds = getXrayInbounds();
           if (!tag || !xrayInbounds.find(ib => ib.tag === tag)) {
-            console.log('✗ Inbound tag not found');
+            showMessage('Inbound tag not found', false);
           } else {
             const current = settings.inbound_remarks?.[tag] || '';
             const value = promptCentered(`ServerDescription for ${tag} (${current || 'empty'}): `);
             setGlobalInboundRemark(tag, value);
-            console.log('✓ Per-inbound serverDescription updated');
+            showMessage('Per-inbound serverDescription updated');
           }
         } else if (s === '8') {
           const tag = promptCentered('Inbound tag: ');
           const xrayInbounds = getXrayInbounds();
           if (!tag || !xrayInbounds.find(ib => ib.tag === tag)) {
-            console.log('✗ Inbound tag not found');
+            showMessage('Inbound tag not found', false);
           } else {
             const current = settings.inbound_link_remarks?.[tag] || '';
             const value = promptCentered(`Remark for ${tag} (${current || 'empty'}): `);
@@ -1250,7 +1324,7 @@ async function main() {
             if (value.trim()) db.settings.inbound_link_remarks[tag] = value.trim();
             else delete db.settings.inbound_link_remarks[tag];
             saveDB(db);
-            console.log('✓ Per-inbound remark updated');
+            showMessage('Per-inbound remark updated');
           }
         } else {
           break;
