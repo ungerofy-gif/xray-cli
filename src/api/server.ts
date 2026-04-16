@@ -354,10 +354,6 @@ function buildRemarkFragment(title: string, serverDescriptionBase64: string): st
   return `${remark}?serverDescription=${encodeURIComponent(serverDescriptionBase64)}`;
 }
 
-function encodeUtf8Base64(value: string): string {
-  return Buffer.from(value, 'utf8').toString('base64');
-}
-
 function pickRandomString(values: unknown[]): string {
   const pool = values.filter(v => typeof v === 'string' && String(v).trim()).map(v => String(v).trim());
   if (pool.length === 0) return '';
@@ -587,7 +583,7 @@ function generateSubscription(profile: Profile): string {
   const meta: string[] = [];
   meta.push('#subscription-auto-update-enable: 1');
   meta.push(`#profile-update-interval: ${Math.max(1, settingsRoot.profile_update_interval || 2)}`);
-  if (globalAnnouncement) meta.push(`#announce: ${encodeUtf8Base64(globalAnnouncement)}`);
+  if (globalAnnouncement) meta.push(`#announce: ${globalAnnouncement}`);
   if (settingsRoot.show_traffic_limit || settingsRoot.show_expiration) {
     const total = settingsRoot.show_traffic_limit ? Math.max(0, Math.floor((p.limit_gb || 0) * 1024 * 1024 * 1024)) : 0;
     const upload = settingsRoot.show_traffic_limit ? Math.max(0, Math.floor(p.upload_bytes || 0)) : 0;
@@ -664,7 +660,7 @@ function generateSubscription(profile: Profile): string {
       params.set('encryption', 'none');
       
       const effectiveDesc = inboundServerDescription || '';
-      serverDescription = effectiveDesc ? encodeUtf8Base64(effectiveDesc) : '';
+      serverDescription = effectiveDesc || '';
       const remark = buildRemarkFragment(title, serverDescription);
       links.push(`vless://${p.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
       
@@ -673,7 +669,7 @@ function generateSubscription(profile: Profile): string {
       applyCommonStreamParams(params, streamSettings);
       
       const effectiveDesc = inboundServerDescription || '';
-      serverDescription = effectiveDesc ? encodeUtf8Base64(effectiveDesc) : '';
+      serverDescription = effectiveDesc || '';
       const remark = buildRemarkFragment(title, serverDescription);
       links.push(`trojan://${password}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
       
@@ -686,7 +682,7 @@ function generateSubscription(profile: Profile): string {
       const ssEncoded = Buffer.from(ssPart).toString('base64').replace(/=+$/, '');
       
       const effectiveDesc = inboundServerDescription || '';
-      serverDescription = effectiveDesc ? encodeUtf8Base64(effectiveDesc) : '';
+      serverDescription = effectiveDesc || '';
       const remark = buildRemarkFragment(title, serverDescription);
       links.push(`ss://${ssEncoded}@${serverAddress}:${ib.port}#${remark}`);
       
@@ -708,7 +704,7 @@ function generateSubscription(profile: Profile): string {
       if (hySettings.downMbps) params.set('downmbps', String(hySettings.downMbps));
       
       const effectiveDesc = inboundServerDescription || '';
-      serverDescription = effectiveDesc ? encodeUtf8Base64(effectiveDesc) : '';
+      serverDescription = effectiveDesc || '';
       const remark = buildRemarkFragment(title, serverDescription);
       links.push(`hy2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
       
@@ -721,7 +717,7 @@ function generateSubscription(profile: Profile): string {
       const endpoint = peer.endpoint || `${serverAddress}:${ib.port}`;
       
       const effectiveDesc = inboundServerDescription || '';
-      serverDescription = effectiveDesc ? encodeUtf8Base64(effectiveDesc) : '';
+      serverDescription = effectiveDesc || '';
       const remark = buildRemarkFragment(title, serverDescription);
       const paramsWg = new URLSearchParams();
       paramsWg.set('publicKey', publicKey);
@@ -781,9 +777,8 @@ app.get('/:token', (req, res) => {
   res.setHeader('profile-update-interval', String(Math.max(1, db.settings?.profile_update_interval || 2)));
   if (profileTitle) res.setHeader('profile-title', `base64:${Buffer.from(profileTitle).toString('base64')}`);
   if (db.settings?.announcement) {
-    const encodedAnnouncement = encodeUtf8Base64(db.settings.announcement);
-    res.setHeader('announce', encodedAnnouncement);
-    res.setHeader('announcement', encodedAnnouncement);
+    res.setHeader('announce', db.settings.announcement);
+    res.setHeader('announcement', db.settings.announcement);
   }
   res.setHeader('subscription-userinfo', userinfo);
   res.send(generateSubscription(profile));
