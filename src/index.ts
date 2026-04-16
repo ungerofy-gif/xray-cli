@@ -447,6 +447,24 @@ function getProfileByUsername(username: string): Profile | undefined {
   return db.profiles.find(p => p.username.toLowerCase() === normalized);
 }
 
+function buildSubscriptionUrls(profile: Profile): Record<string, string> {
+  const host = process.env.API_HOST || '127.0.0.1';
+  const port = Number(process.env.API_PORT) || 2053;
+  const base = `http://${host}:${port}/${profile.sub_uuid}`;
+  return {
+    default: base,
+    v2rayn: `${base}?v2rayn`,
+    v2rayng: `${base}?v2rayng`,
+    nekobox: `${base}?nekobox`,
+    shadowrocket: `${base}?shadowrocket`,
+    clash: `${base}?clash`,
+    mihomo: `${base}?mihomo`,
+    singbox: `${base}?sing-box`,
+    hiddify: `${base}?hiddify`,
+    happ: `${base}?happ`
+  };
+}
+
 function getProfiles() {
   const db = loadDB();
   return db.profiles.sort((a, b) => b.id - a.id);
@@ -941,7 +959,7 @@ async function dashboard() {
   const profiles = db.profiles;
   const xrayInbounds = getXrayInbounds();
 
-  const lines = [
+  const lines: string[] = [
     `Status: ${xrayStatus === 'active' ? 'RUNNING' : 'STOPPED'}`,
     `Profiles: ${profiles.length}`,
     `Inbounds: ${xrayInbounds.length}`,
@@ -1058,17 +1076,27 @@ async function manageInbounds(profileId: number) {
 async function subscriptionUrl(profileId: number) {
   const profile = getProfile(profileId);
   if (!profile) return;
-  
-  const sub = generateSubscription(profile);
+  const urls = buildSubscriptionUrls(profile);
+  const lines = [
+    `Username: ${profile.username}`,
+    '',
+    'Default',
+    urls.default || '',
+    '',
+    'Client Specific',
+    `v2rayN: ${urls.v2rayn}`,
+    `v2rayNG: ${urls.v2rayng}`,
+    `NekoBox: ${urls.nekobox}`,
+    `Shadowrocket: ${urls.shadowrocket}`,
+    `Clash/Mihomo: ${urls.clash}`,
+    `Mihomo (alias): ${urls.mihomo}`,
+    `sing-box: ${urls.singbox}`,
+    `Hiddify: ${urls.hiddify}`,
+    `Happ: ${urls.happ}`
+  ];
   
   clear();
-  renderPanel(`Subscription | ${profile.username}`, [
-    'Base64',
-    sub,
-    '',
-    'Decoded',
-    Buffer.from(sub, 'base64').toString()
-  ]);
+  renderPanel(`Subscription URLs | ${profile.username}`, lines);
   promptCentered('Press Enter to continue...');
 }
 

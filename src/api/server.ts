@@ -574,8 +574,59 @@ function getServerAddress(): string {
   }
 }
 
-function generateSubscription(profile: Profile): string {
-  const db = loadDB();
+interface SubscriptionPayload {
+  meta: string[];
+  links: string[];
+}
+
+type SubscriptionClient =
+  | 'default'
+  | 'raw'
+  | 'v2rayn'
+  | 'v2rayng'
+  | 'nekobox'
+  | 'happ'
+  | 'hiddify'
+  | 'shadowrocket'
+  | 'clash'
+  | 'mihomo'
+  | 'clash-meta'
+  | 'sing-box'
+  | 'singbox';
+
+interface RenderedSubscription {
+  contentType: string;
+  body: string;
+  format: 'base64' | 'uri' | 'text';
+}
+
+const SUBSCRIPTION_CLIENT_ALIASES: Record<string, SubscriptionClient> = {
+  default: 'default',
+  base64: 'default',
+  raw: 'raw',
+  plain: 'raw',
+  text: 'raw',
+  v2rayn: 'v2rayn',
+  v2rayng: 'v2rayng',
+  nekobox: 'nekobox',
+  neko: 'nekobox',
+  happ: 'happ',
+  hiddify: 'hiddify',
+  shadowrocket: 'shadowrocket',
+  clash: 'clash',
+  mihomo: 'mihomo',
+  'clash-meta': 'clash-meta',
+  clashmeta: 'clash-meta',
+  'sing-box': 'sing-box',
+  singbox: 'singbox',
+  sing: 'singbox'
+};
+
+function toBase64Subscription(lines: string[]): string {
+  return Buffer.from(lines.join('\n')).toString('base64');
+}
+
+function buildSubscriptionPayload(profile: Profile, db: Database): SubscriptionPayload {
   const settingsRoot = db.settings;
   const p = db.profiles.find(v => v.id === profile.id) || profile;
   const globalTitle = settingsRoot.subscription_title || '';
@@ -731,7 +782,73 @@ function generateSubscription(profile: Profile): string {
     }
   }
   
-  return Buffer.from([...meta, ...links].join('\n')).toString('base64');
+  return { meta, links };
+}
+
+function normalizeClientName(raw: string): string {
+  return raw.trim().toLowerCase();
+}
+
+function resolveSubscriptionClient(raw: string | undefined): SubscriptionClient {
+  if (!raw) return 'default';
+  return SUBSCRIPTION_CLIENT_ALIASES[normalizeClientName(raw)] || 'default';
+}
+
+function detectRequestedClient(req: express.Request): string | undefined {
+  const query = req.query as Record<string, unknown>;
+  const direct = typeof query.client === 'string'
+    ? query.client
+    : (typeof query.format === 'string' ? query.format : undefined);
+  if (direct) return direct;
+
+  const key = Object.keys(query).find(k => normalizeClientName(k) in SUBSCRIPTION_CLIENT_ALIASES);
+  return key;
+}
+
+function renderSubscriptionByClient(client: SubscriptionClient, payload: SubscriptionPayload): RenderedSubscription {
+  const uriOnly = payload.links;
+  const withMeta = [...payload.meta, ...payload.links];
+  const base64Clients: SubscriptionClient[] = ['default', 'v2rayn', 'v2rayng', 'nekobox', 'happ', 'hiddify', 'shadowrocket'];
+  const uriClients: SubscriptionClient[] = ['raw', 'clash', 'mihomo', 'clash-meta', 'sing-box', 'singbox'];
+
+  if (base64Clients.includes(client)) {
+    return {
+      contentType: 'text/plain; charset=utf-8',
+      body: toBase64Subscription(client === 'default' ? withMeta : uriOnly),
+      format: 'base64'
+    };
+  }
+
+  if (uriClients.includes(client)) {
+    return {
+      contentType: 'text/plain; charset=utf-8',
+      body: uriOnly.join('\n'),
+      format: 'uri'
+    };
+  }
+
+  return {
+    contentType: 'text/plain; charset=utf-8',
+    body: toBase64Subscription(withMeta),
+    format: 'base64'
+  };
+}
+
+function buildSubscriptionUrls(profile: Profile): Record<string, string> {
+  const host = API_HOST || '127.0.0.1';
+  const base = `http://${host}:${API_PORT}/${profile.sub_uuid}`;
+  return {
+    default: base,
+    v2rayn: `${base}?v2rayn`,
+    v2rayng: `${base}?v2rayng`,
+    nekobox: `${base}?nekobox`,
+    shadowrocket: `${base}?shadowrocket`,
+    clash: `${base}?clash`,
+    mihomo: `${base}?mihomo`,
+    singbox: `${base}?sing-box`,
+    hiddify: `${base}?hiddify`,
+    happ: `${base}?happ`
+  };
 }
 
 app.get('/health', requireAuth, (req, res) => {
@@ -786,7 +903,15 @@ app.get('/:token', (req, res) => {
     res.setHeader('announcement', encoded);
   }
   res.setHeader('subscription-userinfo', userinfo);
-  res.send(generateSubscription(profile));
+  const requestedClient = detectRequestedClient(req);
+  const resolvedClient = resolveSubscriptionClient(requestedClient);
+  const payload = buildSubscriptionPayload(profile, db);
+  const rendered = renderSubscriptionByClient(resolvedClient, payload);
+  res.setHeader('x-subscription-client-requested', requestedClient || 'default');
+  res.setHeader('x-subscription-client-resolved', resolvedClient);
+  res.setHeader('x-subscription-format', rendered.format);
+  res.setHeader('Content-Type', rendered.contentType);
+  res.send(rendered.body);
 });
 
 app.get('/api/profiles', requireAuth, (req, res) => {
@@ -1084,8 +1209,7 @@ app.get('/api/profiles/:id/subscription', requireAuth, (req, res) => {
   const db = loadDB();
   const profile = getProfileById(db, req.params.id);
   if (!profile) return res.status(404).json({ detail: 'Profile not found' });
-  const decoded = Buffer.from(generateSubscription(profile), 'base64').toString('utf8');
-  const links = decoded.split('\n').map(v => v.trim()).filter(v => v && !v.startsWith('#'));
+  const payload = buildSubscriptionPayload(profile, db);
   const userinfo = {
     upload: Math.max(0, Math.floor(profile.upload_bytes || 0)),
     download: Math.max(0, Math.floor(profile.download_bytes || 0)),
@@ -1095,7 +1219,9 @@ app.get('/api/profiles/:id/subscription', requireAuth, (req, res) => {
   res.json({
     profile_title: db.settings?.subscription_title || '',
     userinfo,
-    links
+    links: payload.links,
+    urls: buildSubscriptionUrls(profile),
+    supported_clients: Object.keys(SUBSCRIPTION_CLIENT_ALIASES).sort()
   });
 });
 
