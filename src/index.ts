@@ -89,6 +89,12 @@ function getInboundStreamSettings(ib: XrayInbound): XrayStreamSettings {
   return streamSettings;
 }
 
+function normalizeInboundSettings(settings: any): any {
+  const next = { ...(settings || {}) };
+  if ('clients' in next) delete next.clients;
+  return next;
+}
+
 interface Database {
   profiles: Profile[];
   settings: Settings;
@@ -495,7 +501,7 @@ function buildXrayConfig() {
       port: ib.port,
       listen: ib.listen || '0.0.0.0',
       protocol: ib.protocol,
-      settings: ib.settings || {},
+      settings: normalizeInboundSettings(ib.settings),
       allocate: { strategy: 'always' }
     };
     
@@ -519,13 +525,7 @@ function buildXrayConfig() {
       }
     }
     
-    if (clients.length > 0) {
-      if (inbound.settings?.clients) {
-        inbound.settings.clients = [...(inbound.settings.clients || []), ...clients];
-      } else {
-        inbound.settings = { ...inbound.settings, clients };
-      }
-    }
+    if (clients.length > 0) inbound.settings = { ...inbound.settings, clients };
     
     config.inbounds.push(inbound);
   }
@@ -580,14 +580,14 @@ function generateSubscription(profile: Profile): string {
     const expire = settings.show_expiration && p.expires_at ? Math.floor(new Date(p.expires_at).getTime() / 1000) : 0;
     meta.push(`#subscription-userinfo: upload=${upload}; download=${download}; total=${total}; expire=${expire}`);
   }
-  const titlePrefix = settings.subscription_title ? `${settings.subscription_title} - ` : '';
+  const titlePrefix = '';
   
   for (const ib of xrayInbounds) {
     if (!p.inbound_tags?.includes(ib.tag)) continue;
     const streamSettings = getInboundStreamSettings(ib);
     const inboundSettings = (ib.settings as any) || {};
     const inboundRemark = p.inbound_remarks?.[ib.tag];
-    const title = `${titlePrefix}${inboundRemark || p.remark || p.username}`;
+    const title = `${titlePrefix}${inboundRemark || ib.tag}`;
     const remark = encodeURIComponent(title);
     const effectiveDesc = p.server_description || settings.server_description || '';
     const serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
@@ -650,7 +650,7 @@ function generateSubscription(profile: Profile): string {
       const ssSettings = inboundSettings?.clients?.[0] || {};
       const ss = `${ssSettings.method || 'aes-256-gcm'}:${ssSettings.password || p.uuid}@${serverAddress}:${ib.port}`;
       links.push(`ss://${Buffer.from(ss).toString('base64')}#${remark}${descParam}`);
-    } else if (ib.protocol === 'hysteria2') {
+    } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
       const params = new URLSearchParams();
       const auth = p.uuid;
       if (streamSettings.sni) params.set('sni', streamSettings.sni);
@@ -663,9 +663,9 @@ function generateSubscription(profile: Profile): string {
       if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
       if (inboundSettings.obfs) params.set('obfs', inboundSettings.obfs);
       if (inboundSettings.obfsPassword) params.set('obfs-password', inboundSettings.obfsPassword);
-      if (inboundSettings.upMbps) params.set('up', String(inboundSettings.upMbps));
-      if (inboundSettings.downMbps) params.set('down', String(inboundSettings.downMbps));
-      links.push(`hysteria2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
+      if (inboundSettings.upMbps) params.set('upmbps', String(inboundSettings.upMbps));
+      if (inboundSettings.downMbps) params.set('downmbps', String(inboundSettings.downMbps));
+      links.push(`hy2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
     }
   }
   

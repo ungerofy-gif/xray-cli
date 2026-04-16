@@ -277,6 +277,12 @@ function getXrayStats(): Record<string, number> {
   return stats;
 }
 
+function normalizeInboundSettings(settings: any): any {
+  const next = { ...(settings || {}) };
+  if ('clients' in next) delete next.clients;
+  return next;
+}
+
 function syncProfileUsageFromStats(db: Database, stats: Record<string, number>): boolean {
   let changed = false;
   for (const p of db.profiles) {
@@ -317,7 +323,7 @@ function buildXrayConfig() {
       port: ib.port,
       listen: ib.listen || '0.0.0.0',
       protocol: ib.protocol,
-      settings: ib.settings || {},
+      settings: normalizeInboundSettings(ib.settings),
       allocate: { strategy: 'always' }
     };
     
@@ -341,13 +347,7 @@ function buildXrayConfig() {
       }
     }
     
-    if (clients.length > 0) {
-      if (inbound.settings?.clients) {
-        inbound.settings.clients = [...(inbound.settings.clients || []), ...clients];
-      } else {
-        inbound.settings = { ...inbound.settings, clients };
-      }
-    }
+    if (clients.length > 0) inbound.settings = { ...inbound.settings, clients };
     
     config.inbounds.push(inbound);
   }
@@ -402,9 +402,8 @@ function generateSubscription(profile: Profile): string {
     const settings = ib.settings as any || {};
     
     const params = new URLSearchParams();
-    const titlePrefix = globalTitle ? `${globalTitle} - ` : '';
     const inboundRemark = p.inbound_remarks?.[ib.tag];
-    const title = `${titlePrefix}${inboundRemark || p.remark || p.username}`;
+    const title = `${inboundRemark || ib.tag}`;
     let serverDescription = '';
     
     if (ib.protocol === 'vmess') {
@@ -508,7 +507,7 @@ function generateSubscription(profile: Profile): string {
       const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
       links.push(`ss://${ssEncoded}@${serverAddress}:${ib.port}#${remark}${descParam}`);
       
-    } else if (ib.protocol === 'hysteria2') {
+    } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
       const auth = p.uuid;
       
       if (streamSettings.sni) params.set('sni', streamSettings.sni);
@@ -521,14 +520,14 @@ function generateSubscription(profile: Profile): string {
       if (streamSettings.tlsSettings?.alpn) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
       if (settings.obfs) params.set('obfs', settings.obfs);
       if (settings.obfsPassword) params.set('obfs-password', settings.obfsPassword);
-      if (settings.upMbps) params.set('up', String(settings.upMbps));
-      if (settings.downMbps) params.set('down', String(settings.downMbps));
+      if (settings.upMbps) params.set('upmbps', String(settings.upMbps));
+      if (settings.downMbps) params.set('downmbps', String(settings.downMbps));
       
       const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
       const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
-      links.push(`hysteria2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
+      links.push(`hy2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}${descParam}`);
       
     } else if (ib.protocol === 'wireguard') {
       const wgSettings = settings || {};
@@ -585,9 +584,17 @@ app.get('/:token', (req, res) => {
     return res.status(404).json({ detail: 'Profile not found' });
   }
   
+  const userinfoTotal = Math.max(0, Math.floor((profile.limit_gb || 0) * 1024 * 1024 * 1024));
+  const userinfoUpload = Math.max(0, Math.floor(profile.upload_bytes || 0));
+  const userinfoDownload = Math.max(0, Math.floor(profile.download_bytes || 0));
+  const userinfoExpire = profile.expires_at ? Math.floor(new Date(profile.expires_at).getTime() / 1000) : 0;
+  const userinfo = `upload=${userinfoUpload}; download=${userinfoDownload}; total=${userinfoTotal}; expire=${userinfoExpire}`;
+  const profileTitle = db.settings?.subscription_title || '';
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('subscription-auto-update-enable', '1');
   res.setHeader('profile-update-interval', String(Math.max(1, db.settings?.profile_update_interval || 2)));
+  if (profileTitle) res.setHeader('profile-title', `base64:${Buffer.from(profileTitle).toString('base64')}`);
+  res.setHeader('subscription-userinfo', userinfo);
   res.send(generateSubscription(profile));
 });
 
@@ -834,9 +841,17 @@ app.get('/api/profiles/:id/subscription', requireAuth, (req, res) => {
   const db = loadDB();
   const profile = getProfileById(db, req.params.id);
   if (!profile) return res.status(404).json({ detail: 'Profile not found' });
+  const userinfoTotal = Math.max(0, Math.floor((profile.limit_gb || 0) * 1024 * 1024 * 1024));
+  const userinfoUpload = Math.max(0, Math.floor(profile.upload_bytes || 0));
+  const userinfoDownload = Math.max(0, Math.floor(profile.download_bytes || 0));
+  const userinfoExpire = profile.expires_at ? Math.floor(new Date(profile.expires_at).getTime() / 1000) : 0;
+  const userinfo = `upload=${userinfoUpload}; download=${userinfoDownload}; total=${userinfoTotal}; expire=${userinfoExpire}`;
+  const profileTitle = db.settings?.subscription_title || '';
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   res.setHeader('subscription-auto-update-enable', '1');
   res.setHeader('profile-update-interval', String(Math.max(1, db.settings?.profile_update_interval || 2)));
+  if (profileTitle) res.setHeader('profile-title', `base64:${Buffer.from(profileTitle).toString('base64')}`);
+  res.setHeader('subscription-userinfo', userinfo);
   res.send(generateSubscription(profile));
 });
 
