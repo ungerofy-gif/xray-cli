@@ -194,6 +194,7 @@ const API_HOST = process.env.API_HOST || '127.0.0.1';
 const API_KEY = process.env.API_KEY || '';
 const XRAY_API_ADDRESS = process.env.XRAY_API_ADDRESS || '127.0.0.1:62789';
 const STATS_CACHE_TTL_MS = Number(process.env.XRAY_STATS_CACHE_TTL_MS || 1000);
+const XRAY_BIN_PATH = process.env.XRAY_BIN_PATH || '';
 
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (!API_KEY) {
@@ -356,16 +357,24 @@ function runXrayStatsCommand(cmd: string): Record<string, number> {
   }
 }
 
+function getXrayCommandBinary(): string {
+  if (XRAY_BIN_PATH && existsSync(XRAY_BIN_PATH)) return XRAY_BIN_PATH;
+  if (existsSync('/usr/local/bin/xray')) return '/usr/local/bin/xray';
+  if (existsSync('/usr/bin/xray')) return '/usr/bin/xray';
+  return 'xray';
+}
+
 function getXrayStats(forceFresh = false): Record<string, number> {
   const now = Date.now();
   if (!forceFresh && statsCache.at > 0 && now - statsCache.at < STATS_CACHE_TTL_MS) {
     return statsCache.values;
   }
 
+  const xrayBin = getXrayCommandBinary();
   const commands = [
-    `xray api statsquery --server=${XRAY_API_ADDRESS} --pattern "user>>>"`,
-    `xray api stats --server=${XRAY_API_ADDRESS}`,
-    'xray api stats'
+    `${xrayBin} api statsquery --server=${XRAY_API_ADDRESS} --pattern "user>>>"`,
+    `${xrayBin} api stats --server=${XRAY_API_ADDRESS}`,
+    `${xrayBin} api stats`
   ];
   for (const cmd of commands) {
     const stats = runXrayStatsCommand(cmd);
