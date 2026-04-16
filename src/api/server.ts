@@ -404,6 +404,7 @@ function buildXrayConfig() {
     }
     
     const clients: any[] = [];
+    const users: any[] = [];
     
     for (const profile of db.profiles.filter(p => p.enable && p.inbound_tags?.includes(ib.tag))) {
       if (ib.protocol === 'vmess' || ib.protocol === 'vless') {
@@ -415,11 +416,12 @@ function buildXrayConfig() {
         const ssSettings = (ib.settings as any)?.clients?.[0] || {};
         clients.push({ method: ssSettings.method || 'aes-256-gcm', password: ssSettings.password || profile.uuid, email: profile.username });
       } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
-        clients.push({ auth: profile.uuid, email: profile.username });
+        users.push({ auth: profile.uuid, email: profile.username });
       }
     }
     
     if (clients.length > 0) inbound.settings = { ...inbound.settings, clients };
+    if (users.length > 0) inbound.settings = { ...inbound.settings, users };
     
     config.inbounds.push(inbound);
   }
@@ -446,8 +448,6 @@ function getServerAddress(): string {
 
 function generateSubscription(profile: Profile): string {
   const db = loadDB();
-  const stats = getXrayStats();
-  if (syncProfileUsageFromStats(db, stats)) saveDB(db);
   const settingsRoot = db.settings;
   const p = db.profiles.find(v => v.id === profile.id) || profile;
   const globalTitle = settingsRoot.subscription_title || '';
@@ -565,9 +565,17 @@ function generateSubscription(profile: Profile): string {
       
     } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
       const auth = p.uuid;
-      applyCommonStreamParams(params, streamSettings);
-      if (settings.obfs) params.set('obfs', settings.obfs);
-      if (settings.obfsPassword) params.set('obfs-password', settings.obfsPassword);
+      if (streamSettings.tlsSettings?.sni) params.set('sni', streamSettings.tlsSettings.sni);
+      else if (streamSettings.tlsSettings?.serverName) params.set('sni', streamSettings.tlsSettings.serverName);
+      else if (streamSettings.sni) params.set('sni', streamSettings.sni);
+      if (streamSettings.tlsSettings?.fingerprint) params.set('fp', streamSettings.tlsSettings.fingerprint);
+      else if (streamSettings.fingerprint) params.set('fp', streamSettings.fingerprint);
+      if (streamSettings.tlsSettings?.alpn?.length) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
+      if (streamSettings.tlsSettings?.allowInsecure) params.set('insecure', '1');
+      if (settings.obfs && settings.obfsPassword) {
+        params.set('obfs', settings.obfs);
+        params.set('obfs-password', settings.obfsPassword);
+      }
       if (settings.upMbps) params.set('upmbps', String(settings.upMbps));
       if (settings.downMbps) params.set('downmbps', String(settings.downMbps));
       
