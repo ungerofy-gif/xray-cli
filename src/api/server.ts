@@ -390,6 +390,34 @@ function applyCommonStreamParams(params: URLSearchParams, streamSettings: XraySt
   }
 }
 
+function extractHysteriaShareSettings(inboundSettings: any): {
+  obfsType: string;
+  obfsPassword: string;
+  upMbps?: number;
+  downMbps?: number;
+} {
+  const settings = inboundSettings || {};
+  const obfsType =
+    settings?.obfs?.type
+    || settings?.obfs
+    || '';
+  const obfsPassword =
+    settings?.obfs?.password
+    || settings?.obfsPassword
+    || '';
+  const upRaw = settings?.upMbps ?? settings?.up_mbps ?? settings?.up ?? settings?.upstream;
+  const downRaw = settings?.downMbps ?? settings?.down_mbps ?? settings?.down ?? settings?.downstream;
+  const upMbps = Number(upRaw);
+  const downMbps = Number(downRaw);
+
+  return {
+    obfsType: typeof obfsType === 'string' ? obfsType.trim() : '',
+    obfsPassword: typeof obfsPassword === 'string' ? obfsPassword.trim() : '',
+    upMbps: Number.isFinite(upMbps) && upMbps > 0 ? upMbps : undefined,
+    downMbps: Number.isFinite(downMbps) && downMbps > 0 ? downMbps : undefined
+  };
+}
+
 function syncProfileUsageFromStats(db: Database, stats: Record<string, number>): boolean {
   let changed = false;
   for (const p of db.profiles) {
@@ -607,6 +635,7 @@ function generateSubscription(profile: Profile): string {
       
     } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
       const auth = p.uuid;
+      const hySettings = extractHysteriaShareSettings(settings);
       if (streamSettings.tlsSettings?.sni) params.set('sni', streamSettings.tlsSettings.sni);
       else if (streamSettings.tlsSettings?.serverName) params.set('sni', streamSettings.tlsSettings.serverName);
       else if (streamSettings.sni) params.set('sni', streamSettings.sni);
@@ -614,12 +643,12 @@ function generateSubscription(profile: Profile): string {
       else if (streamSettings.fingerprint) params.set('fp', streamSettings.fingerprint);
       if (streamSettings.tlsSettings?.alpn?.length) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
       if (streamSettings.tlsSettings?.allowInsecure) params.set('insecure', '1');
-      if (settings.obfs && settings.obfsPassword) {
-        params.set('obfs', settings.obfs);
-        params.set('obfs-password', settings.obfsPassword);
+      if (hySettings.obfsType && hySettings.obfsPassword) {
+        params.set('obfs', hySettings.obfsType);
+        params.set('obfs-password', hySettings.obfsPassword);
       }
-      if (settings.upMbps) params.set('upmbps', String(settings.upMbps));
-      if (settings.downMbps) params.set('downmbps', String(settings.downMbps));
+      if (hySettings.upMbps) params.set('upmbps', String(hySettings.upMbps));
+      if (hySettings.downMbps) params.set('downmbps', String(hySettings.downMbps));
       
       const effectiveDesc = p.server_description || globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
