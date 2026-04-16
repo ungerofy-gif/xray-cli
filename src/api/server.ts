@@ -147,12 +147,23 @@ const API_PORT = Number(process.env.API_PORT) || 2053;
 const API_HOST = process.env.API_HOST || '127.0.0.1';
 const API_KEY = process.env.API_KEY || '';
 
+function isLocalRequest(req: express.Request): boolean {
+  const remote = req.socket.remoteAddress || '';
+  return remote === '127.0.0.1'
+    || remote === '::1'
+    || remote === '::ffff:127.0.0.1';
+}
+
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (!API_KEY) return next();
-  
+  if (isLocalRequest(req)) return next();
+
+  if (!API_KEY) {
+    return res.status(403).json({ detail: 'Forbidden - external access requires API_KEY' });
+  }
+
   const key = req.headers['x-api-key'] as string;
   if (key === API_KEY) return next();
-  
+
   res.status(401).json({ detail: 'Unauthorized - invalid or missing API key' });
 }
 
