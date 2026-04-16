@@ -583,13 +583,15 @@ function buildXrayConfig() {
     };
     
     if (ib.stream_settings || ib.streamSettings) {
-      inbound.stream_settings = ib.stream_settings || ib.streamSettings;
+      inbound.streamSettings = ib.stream_settings || ib.streamSettings;
     }
     
     const clients: any[] = [];
     
     for (const profile of db.profiles.filter(p => p.enable && p.inbound_tags?.includes(ib.tag))) {
-      if (ib.protocol === 'vmess' || ib.protocol === 'vless') {
+      if (ib.protocol === 'vmess') {
+        clients.push({ id: profile.uuid, email: profile.username });
+      } else if (ib.protocol === 'vless') {
         clients.push({ id: profile.uuid, email: profile.username, flow: profile.flow || 'xtls-rprx-vision' });
       } else if (ib.protocol === 'trojan') {
         const pass = (ib.settings as any)?.clients?.[0]?.password || profile.uuid;
