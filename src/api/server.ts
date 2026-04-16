@@ -192,6 +192,8 @@ const XRAY_CONFIG_PATH = process.env.XRAY_CONFIG_PATH || '/usr/local/etc/xray/co
 const API_PORT = Number(process.env.API_PORT) || 2053;
 const API_HOST = process.env.API_HOST || '127.0.0.1';
 const API_KEY = process.env.API_KEY || '';
+const XRAY_API_ADDRESS = process.env.XRAY_API_ADDRESS || '127.0.0.1:62789';
+const STATS_CACHE_TTL_MS = Number(process.env.XRAY_STATS_CACHE_TTL_MS || 1000);
 
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (!API_KEY) {
@@ -327,16 +329,54 @@ function reloadXray(): boolean {
   }
 }
 
-function getXrayStats(): Record<string, number> {
+let statsCache: { at: number; values: Record<string, number> } = { at: 0, values: {} };
+
+function parseXrayStatsOutput(raw: string): Record<string, number> {
   const stats: Record<string, number> = {};
-  try {
-    const result = execSync('xray api stats', { encoding: 'utf8' });
-    for (const line of result.split('\n')) {
-      const match = line.match(/(.+?) (\d+)$/);
-      if (match && match[1] && match[2]) stats[match[1]] = parseInt(match[2], 10);
+  for (const line of raw.split('\n')) {
+    const plain = line.match(/^([^"\s][^:]*?)\s+(\d+)$/);
+    if (plain && plain[1] && plain[2]) {
+      stats[plain[1].trim()] = parseInt(plain[2], 10);
+      continue;
     }
-  } catch {}
+    const proto = line.match(/name:\s*"([^"]+)"\s+value:\s*(\d+)/);
+    if (proto && proto[1] && proto[2]) {
+      stats[proto[1]] = parseInt(proto[2], 10);
+    }
+  }
   return stats;
+}
+
+function runXrayStatsCommand(cmd: string): Record<string, number> {
+  try {
+    const out = execSync(cmd, { encoding: 'utf8' });
+    return parseXrayStatsOutput(out);
+  } catch {
+    return {};
+  }
+}
+
+function getXrayStats(forceFresh = false): Record<string, number> {
+  const now = Date.now();
+  if (!forceFresh && statsCache.at > 0 && now - statsCache.at < STATS_CACHE_TTL_MS) {
+    return statsCache.values;
+  }
+
+  const commands = [
+    `xray api statsquery --server=${XRAY_API_ADDRESS} --pattern "user>>>"`,
+    `xray api stats --server=${XRAY_API_ADDRESS}`,
+    'xray api stats'
+  ];
+  for (const cmd of commands) {
+    const stats = runXrayStatsCommand(cmd);
+    if (Object.keys(stats).length > 0) {
+      statsCache = { at: now, values: stats };
+      return stats;
+    }
+  }
+
+  statsCache = { at: now, values: {} };
+  return {};
 }
 
 function normalizeInboundSettings(settings: any): any {
@@ -564,6 +604,24 @@ function buildXrayConfig() {
     protocol: 'dokodemo-door',
     settings: { address: '127.0.0.1' }
   });
+
+  const existingRules = Array.isArray(config.routing?.rules) ? config.routing.rules : [];
+  const hasApiRoute = existingRules.some((rule: any) =>
+    rule
+    && rule.type === 'field'
+    && Array.isArray(rule.inboundTag)
+    && rule.inboundTag.includes('api')
+    && rule.outboundTag === 'api'
+  );
+  config.routing = {
+    ...(config.routing || {}),
+    rules: hasApiRoute
+      ? existingRules
+      : [
+        ...existingRules,
+        { type: 'field', inboundTag: ['api'], outboundTag: 'api' }
+      ]
+  };
   
   return config;
 }

@@ -815,6 +815,24 @@ function buildXrayConfig() {
     protocol: 'dokodemo-door',
     settings: { address: '127.0.0.1' }
   });
+
+  const existingRules = Array.isArray(config.routing?.rules) ? config.routing.rules : [];
+  const hasApiRoute = existingRules.some((rule: any) =>
+    rule
+    && rule.type === 'field'
+    && Array.isArray(rule.inboundTag)
+    && rule.inboundTag.includes('api')
+    && rule.outboundTag === 'api'
+  );
+  config.routing = {
+    ...(config.routing || {}),
+    rules: hasApiRoute
+      ? existingRules
+      : [
+        ...existingRules,
+        { type: 'field', inboundTag: ['api'], outboundTag: 'api' }
+      ]
+  };
   
   return config;
 }
