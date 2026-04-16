@@ -433,6 +433,20 @@ function startXray(): boolean {
   }
 }
 
+function reloadXrayService(): boolean {
+  try {
+    execSync('systemctl reload xray');
+    return true;
+  } catch {
+    try {
+      execSync('systemctl restart xray');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 function validateXrayConfig(): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
   
@@ -521,7 +535,7 @@ function buildXrayConfig() {
         const ssSettings = (ib.settings as any)?.clients?.[0] || {};
         clients.push({ method: ssSettings.method || 'aes-256-gcm', password: ssSettings.password || profile.uuid, email: profile.username });
       } else if (ib.protocol === 'hysteria2') {
-        clients.push({ password: profile.uuid, email: profile.username });
+        clients.push({ auth: profile.uuid, email: profile.username });
       }
     }
     
@@ -546,8 +560,8 @@ function reloadXray() {
     const config = buildXrayConfig();
     mkdirSync(dirname(XRAY_CONFIG_PATH), { recursive: true });
     writeFileSync(XRAY_CONFIG_PATH, JSON.stringify(config, null, 2));
-    execSync('systemctl restart xray');
-    console.log('✓ xray reloaded');
+    if (!reloadXrayService()) throw new Error('systemctl reload/restart failed');
+    console.log('✓ xray config reloaded');
   } catch (e: any) {
     console.log('✗ Failed to reload:', e.message);
   }

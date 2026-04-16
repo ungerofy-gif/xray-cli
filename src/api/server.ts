@@ -170,11 +170,11 @@ function getProfileById(db: Database, idParam: unknown): Profile | null {
   return db.profiles.find(p => p.id === id) || null;
 }
 
-function saveConfigAndRestart(): void {
+function saveConfigAndReload(): void {
   const config = buildXrayConfig();
   mkdirSync(dirname(XRAY_CONFIG_PATH), { recursive: true });
   writeFileSync(XRAY_CONFIG_PATH, JSON.stringify(config, null, 2));
-  restartXray();
+  reloadXray();
 }
 
 function generateShortToken(length = 10): string {
@@ -265,6 +265,15 @@ function restartXray(): boolean {
   }
 }
 
+function reloadXray(): boolean {
+  try {
+    execSync('systemctl reload xray');
+    return true;
+  } catch {
+    return restartXray();
+  }
+}
+
 function getXrayStats(): Record<string, number> {
   const stats: Record<string, number> = {};
   try {
@@ -343,7 +352,7 @@ function buildXrayConfig() {
         const ssSettings = (ib.settings as any)?.clients?.[0] || {};
         clients.push({ method: ssSettings.method || 'aes-256-gcm', password: ssSettings.password || profile.uuid, email: profile.username });
       } else if (ib.protocol === 'hysteria2') {
-        clients.push({ password: profile.uuid, email: profile.username });
+        clients.push({ auth: profile.uuid, email: profile.username });
       }
     }
     
@@ -569,7 +578,7 @@ app.get('/stats', requireAuth, (req, res) => {
 
 app.post('/reload', requireAuth, (req, res) => {
   try {
-    saveConfigAndRestart();
+    saveConfigAndReload();
     res.json({ status: 'ok' });
   } catch (error: any) {
     res.status(500).json({ detail: error.message });
@@ -647,7 +656,7 @@ app.post('/api/profiles', requireAuth, (req, res) => {
   
   db.profiles.push(profile);
   saveDB(db);
-  saveConfigAndRestart();
+  saveConfigAndReload();
   
   res.json(profile);
 });
@@ -661,7 +670,7 @@ app.delete('/api/profiles/:id', requireAuth, (req, res) => {
   
   db.profiles.splice(idx, 1);
   saveDB(db);
-  saveConfigAndRestart();
+  saveConfigAndReload();
   
   res.json({ status: 'ok' });
 });
@@ -695,7 +704,7 @@ app.post('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
     profile.inbound_tags.push(tag);
     profile.updated_at = new Date().toISOString();
     saveDB(db);
-    saveConfigAndRestart();
+    saveConfigAndReload();
   }
   
   res.json(profile.inbound_tags);
@@ -710,7 +719,7 @@ app.delete('/api/profiles/:id/inbounds/:tag', requireAuth, (req, res) => {
   profile.inbound_tags = profile.inbound_tags.filter(t => t !== req.params.tag);
   profile.updated_at = new Date().toISOString();
   saveDB(db);
-  saveConfigAndRestart();
+  saveConfigAndReload();
   
   res.json(profile.inbound_tags);
 });
@@ -765,7 +774,7 @@ app.patch('/api/profiles/:id/toggle', requireAuth, (req, res) => {
   profile.enable = profile.enable ? 0 : 1;
   profile.updated_at = new Date().toISOString();
   saveDB(db);
-  saveConfigAndRestart();
+  saveConfigAndReload();
   
   res.json({ status: 'ok', enable: profile.enable });
 });
@@ -804,7 +813,7 @@ app.patch('/api/profiles/:id', requireAuth, (req, res) => {
 
   profile.updated_at = new Date().toISOString();
   saveDB(db);
-  saveConfigAndRestart();
+  saveConfigAndReload();
   res.json(profile);
 });
 
@@ -841,18 +850,19 @@ app.get('/api/profiles/:id/subscription', requireAuth, (req, res) => {
   const db = loadDB();
   const profile = getProfileById(db, req.params.id);
   if (!profile) return res.status(404).json({ detail: 'Profile not found' });
-  const userinfoTotal = Math.max(0, Math.floor((profile.limit_gb || 0) * 1024 * 1024 * 1024));
-  const userinfoUpload = Math.max(0, Math.floor(profile.upload_bytes || 0));
-  const userinfoDownload = Math.max(0, Math.floor(profile.download_bytes || 0));
-  const userinfoExpire = profile.expires_at ? Math.floor(new Date(profile.expires_at).getTime() / 1000) : 0;
-  const userinfo = `upload=${userinfoUpload}; download=${userinfoDownload}; total=${userinfoTotal}; expire=${userinfoExpire}`;
-  const profileTitle = db.settings?.subscription_title || '';
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('subscription-auto-update-enable', '1');
-  res.setHeader('profile-update-interval', String(Math.max(1, db.settings?.profile_update_interval || 2)));
-  if (profileTitle) res.setHeader('profile-title', `base64:${Buffer.from(profileTitle).toString('base64')}`);
-  res.setHeader('subscription-userinfo', userinfo);
-  res.send(generateSubscription(profile));
+  const decoded = Buffer.from(generateSubscription(profile), 'base64').toString('utf8');
+  const links = decoded.split('\n').map(v => v.trim()).filter(v => v && !v.startsWith('#'));
+  const userinfo = {
+    upload: Math.max(0, Math.floor(profile.upload_bytes || 0)),
+    download: Math.max(0, Math.floor(profile.download_bytes || 0)),
+    total: Math.max(0, Math.floor((profile.limit_gb || 0) * 1024 * 1024 * 1024)),
+    expire: profile.expires_at ? Math.floor(new Date(profile.expires_at).getTime() / 1000) : 0
+  };
+  res.json({
+    profile_title: db.settings?.subscription_title || '',
+    userinfo,
+    links
+  });
 });
 
 app.listen(API_PORT, API_HOST, () => {
