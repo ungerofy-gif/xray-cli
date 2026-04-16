@@ -31,7 +31,7 @@ interface Profile {
 
 interface Settings {
   subscription_title: string;
-  server_description: string;
+  announcement: string;
   inbound_remarks: Record<string, string>;
   profile_update_interval: number;
   show_traffic_limit: number;
@@ -281,7 +281,7 @@ function loadDB(): Database {
       }),
       settings: {
         subscription_title: raw.settings?.subscription_title || '',
-        server_description: raw.settings?.server_description || '',
+        announcement: raw.settings?.announcement || raw.settings?.server_description || '',
         inbound_remarks: raw.settings?.inbound_remarks || {},
         profile_update_interval: Number(raw.settings?.profile_update_interval ?? 2) || 2,
         show_traffic_limit: raw.settings?.show_traffic_limit === undefined ? 1 : (raw.settings?.show_traffic_limit ? 1 : 0),
@@ -294,7 +294,7 @@ function loadDB(): Database {
     profiles: [],
     settings: {
       subscription_title: '',
-      server_description: '',
+      announcement: '',
       inbound_remarks: {},
       profile_update_interval: 2,
       show_traffic_limit: 1,
@@ -481,7 +481,7 @@ function getSettings(): Settings {
   const db = loadDB();
   return db.settings || {
     subscription_title: '',
-    server_description: '',
+    announcement: '',
     inbound_remarks: {},
     profile_update_interval: 2,
     show_traffic_limit: 1,
@@ -761,6 +761,7 @@ function generateSubscription(profile: Profile): string {
   const meta: string[] = [];
   meta.push('#subscription-auto-update-enable: 1');
   meta.push(`#profile-update-interval: ${Math.max(1, settings.profile_update_interval || 2)}`);
+  if (settings.announcement) meta.push(`#announcement: ${settings.announcement}`);
   if (settings.show_traffic_limit || settings.show_expiration) {
     const total = settings.show_traffic_limit ? Math.max(0, Math.floor((p.limit_gb || 0) * 1024 * 1024 * 1024)) : 0;
     const upload = settings.show_traffic_limit ? Math.max(0, Math.floor(p.upload_bytes || 0)) : 0;
@@ -775,9 +776,9 @@ function generateSubscription(profile: Profile): string {
     const streamSettings = getInboundStreamSettings(ib);
     const inboundSettings = (ib.settings as any) || {};
     const inboundRemark = settings.inbound_remarks?.[ib.tag];
-    const title = `${titlePrefix}${inboundRemark || ib.tag}`;
+    const title = `${titlePrefix}${ib.tag}`;
     const remark = encodeURIComponent(title);
-    const effectiveDesc = settings.server_description || '';
+    const effectiveDesc = inboundRemark || '';
     const serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
     const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
     
@@ -1163,13 +1164,13 @@ async function main() {
           `Config: ${XRAY_CONFIG_PATH}`,
           `Database: ${DB_PATH}`,
           `Subscription Title: ${settings.subscription_title || '(default)'}`,
-          `Server Description: ${settings.server_description || '(none)'}`,
+          `Announcement: ${settings.announcement || '(none)'}`,
           `Auto Update Interval (h): ${settings.profile_update_interval || 2}`,
           `Show Traffic Limit: ${settings.show_traffic_limit ? 'ON' : 'OFF'}`,
           `Show Expiration: ${settings.show_expiration ? 'ON' : 'OFF'}`,
           '',
           '1. Set Subscription Title',
-          '2. Set Server Description (global)',
+          '2. Set Announcement (global)',
           '3. Set Auto Update Interval (hours)',
           '4. Toggle Show Traffic Limit',
           '5. Toggle Show Expiration',
@@ -1184,9 +1185,9 @@ async function main() {
           updateSettings({ subscription_title: title });
           console.log('✓ Title updated');
         } else if (s === '2') {
-          const desc = promptCentered('Server description: ');
-          updateSettings({ server_description: desc });
-          console.log('✓ Description updated');
+          const desc = promptCentered('Announcement: ');
+          updateSettings({ announcement: desc });
+          console.log('✓ Announcement updated');
         } else if (s === '3') {
           const hours = Number(promptCentered(`Auto update interval hours (${settings.profile_update_interval || 2}): `) || '2');
           updateSettings({ profile_update_interval: Math.max(1, Math.floor(hours || 2)) });
@@ -1225,9 +1226,9 @@ async function main() {
             console.log('✗ Inbound tag not found');
           } else {
             const current = settings.inbound_remarks?.[tag] || '';
-            const value = promptCentered(`Remark for ${tag} (${current || 'empty'}): `);
+            const value = promptCentered(`ServerDescription for ${tag} (${current || 'empty'}): `);
             setGlobalInboundRemark(tag, value);
-            console.log('✓ Global inbound remark updated');
+            console.log('✓ Per-inbound serverDescription updated');
           }
         } else {
           break;

@@ -31,7 +31,7 @@ interface Profile {
 
 interface Settings {
   subscription_title: string;
-  server_description: string;
+  announcement: string;
   inbound_remarks: Record<string, string>;
   profile_update_interval: number;
   show_traffic_limit: number;
@@ -152,7 +152,7 @@ function loadDB(): Database {
       }),
       settings: {
         subscription_title: raw.settings?.subscription_title || '',
-        server_description: raw.settings?.server_description || '',
+        announcement: raw.settings?.announcement || raw.settings?.server_description || '',
         inbound_remarks: raw.settings?.inbound_remarks || {},
         profile_update_interval: Number(raw.settings?.profile_update_interval ?? 2) || 2,
         show_traffic_limit: raw.settings?.show_traffic_limit === undefined ? 1 : (raw.settings?.show_traffic_limit ? 1 : 0),
@@ -165,7 +165,7 @@ function loadDB(): Database {
     profiles: [],
     settings: {
       subscription_title: '',
-      server_description: '',
+      announcement: '',
       inbound_remarks: {},
       profile_update_interval: 2,
       show_traffic_limit: 1,
@@ -566,7 +566,7 @@ function generateSubscription(profile: Profile): string {
   const settingsRoot = db.settings;
   const p = db.profiles.find(v => v.id === profile.id) || profile;
   const globalTitle = settingsRoot.subscription_title || '';
-  const globalServerDescription = settingsRoot.server_description || '';
+  const globalAnnouncement = settingsRoot.announcement || '';
   const xrayInbounds = getXrayInbounds();
   const fallbackAddress = getServerAddress();
   const serverAddress = p.server_address || fallbackAddress;
@@ -574,6 +574,7 @@ function generateSubscription(profile: Profile): string {
   const meta: string[] = [];
   meta.push('#subscription-auto-update-enable: 1');
   meta.push(`#profile-update-interval: ${Math.max(1, settingsRoot.profile_update_interval || 2)}`);
+  if (globalAnnouncement) meta.push(`#announcement: ${globalAnnouncement}`);
   if (settingsRoot.show_traffic_limit || settingsRoot.show_expiration) {
     const total = settingsRoot.show_traffic_limit ? Math.max(0, Math.floor((p.limit_gb || 0) * 1024 * 1024 * 1024)) : 0;
     const upload = settingsRoot.show_traffic_limit ? Math.max(0, Math.floor(p.upload_bytes || 0)) : 0;
@@ -590,7 +591,7 @@ function generateSubscription(profile: Profile): string {
     
     const params = new URLSearchParams();
     const inboundRemark = settingsRoot.inbound_remarks?.[ib.tag];
-    const title = `${inboundRemark || ib.tag}`;
+    const title = `${ib.tag}`;
     let serverDescription = '';
     
     if (ib.protocol === 'vmess') {
@@ -636,7 +637,7 @@ function generateSubscription(profile: Profile): string {
         if (streamSettings.quicSettings?.header?.type) vmess.type = streamSettings.quicSettings.header.type;
       }
 
-      const effectiveDesc = globalServerDescription;
+      const effectiveDesc = inboundRemark || '';
       if (effectiveDesc) vmess.serverDescription = effectiveDesc;
       
       const encoded = Buffer.from(JSON.stringify(vmess)).toString('base64').replace(/=+$/, '');
@@ -648,7 +649,7 @@ function generateSubscription(profile: Profile): string {
       params.set('flow', 'xtls-rprx-vision');
       params.set('encryption', 'none');
       
-      const effectiveDesc = globalServerDescription;
+      const effectiveDesc = inboundRemark || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       if (serverDescription) params.set('serverDescription', serverDescription);
       const remark = encodeURIComponent(title);
@@ -658,7 +659,7 @@ function generateSubscription(profile: Profile): string {
       const password = settings.clients?.[0]?.password || p.uuid;
       applyCommonStreamParams(params, streamSettings);
       
-      const effectiveDesc = globalServerDescription;
+      const effectiveDesc = inboundRemark || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       if (serverDescription) params.set('serverDescription', serverDescription);
       const remark = encodeURIComponent(title);
@@ -672,7 +673,7 @@ function generateSubscription(profile: Profile): string {
       const ssPart = `${method}:${password}`;
       const ssEncoded = Buffer.from(ssPart).toString('base64').replace(/=+$/, '');
       
-      const effectiveDesc = globalServerDescription;
+      const effectiveDesc = inboundRemark || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
       const query = serverDescription ? `?serverDescription=${encodeURIComponent(serverDescription)}` : '';
@@ -695,7 +696,7 @@ function generateSubscription(profile: Profile): string {
       if (hySettings.upMbps) params.set('upmbps', String(hySettings.upMbps));
       if (hySettings.downMbps) params.set('downmbps', String(hySettings.downMbps));
       
-      const effectiveDesc = globalServerDescription;
+      const effectiveDesc = inboundRemark || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       if (serverDescription) params.set('serverDescription', serverDescription);
       const remark = encodeURIComponent(title);
@@ -709,7 +710,7 @@ function generateSubscription(profile: Profile): string {
       const allowedIPs = peer.allowedIPs?.join(',') || '0.0.0.0/0';
       const endpoint = peer.endpoint || `${serverAddress}:${ib.port}`;
       
-      const effectiveDesc = globalServerDescription;
+      const effectiveDesc = inboundRemark || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
       const paramsWg = new URLSearchParams();
@@ -770,6 +771,7 @@ app.get('/:token', (req, res) => {
   res.setHeader('subscription-auto-update-enable', '1');
   res.setHeader('profile-update-interval', String(Math.max(1, db.settings?.profile_update_interval || 2)));
   if (profileTitle) res.setHeader('profile-title', `base64:${Buffer.from(profileTitle).toString('base64')}`);
+  if (db.settings?.announcement) res.setHeader('announcement', db.settings.announcement);
   res.setHeader('subscription-userinfo', userinfo);
   res.send(generateSubscription(profile));
 });
@@ -1017,8 +1019,10 @@ app.patch('/api/settings', requireAuth, (req, res) => {
   const db = loadDB();
   const subscription_title =
     req.body.subscription_title === undefined ? undefined : normalizeText(req.body.subscription_title);
-  const server_description =
-    req.body.server_description === undefined ? undefined : normalizeText(req.body.server_description);
+  const announcement =
+    req.body.announcement === undefined
+      ? (req.body.server_description === undefined ? undefined : normalizeText(req.body.server_description))
+      : normalizeText(req.body.announcement);
   const inbound_remarks =
     req.body.inbound_remarks === undefined ? undefined : (typeof req.body.inbound_remarks === 'object' && req.body.inbound_remarks ? req.body.inbound_remarks : {});
   const profile_update_interval =
@@ -1029,7 +1033,7 @@ app.patch('/api/settings', requireAuth, (req, res) => {
     req.body.show_expiration === undefined ? undefined : (req.body.show_expiration ? 1 : 0);
 
   if (subscription_title !== undefined) db.settings.subscription_title = subscription_title;
-  if (server_description !== undefined) db.settings.server_description = server_description;
+  if (announcement !== undefined) db.settings.announcement = announcement;
   if (inbound_remarks !== undefined) db.settings.inbound_remarks = inbound_remarks as Record<string, string>;
   if (profile_update_interval !== undefined && !Number.isNaN(profile_update_interval)) {
     db.settings.profile_update_interval = Math.max(1, Math.floor(profile_update_interval));
