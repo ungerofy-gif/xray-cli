@@ -583,7 +583,7 @@ function generateSubscription(profile: Profile): string {
   const meta: string[] = [];
   meta.push('#subscription-auto-update-enable: 1');
   meta.push(`#profile-update-interval: ${Math.max(1, settingsRoot.profile_update_interval || 2)}`);
-  if (globalAnnouncement) meta.push(`#announce: ${globalAnnouncement}`);
+  if (globalAnnouncement) meta.push(`#announce: ${Buffer.from(globalAnnouncement).toString('base64')}`);
   if (settingsRoot.show_traffic_limit || settingsRoot.show_expiration) {
     const total = settingsRoot.show_traffic_limit ? Math.max(0, Math.floor((p.limit_gb || 0) * 1024 * 1024 * 1024)) : 0;
     const upload = settingsRoot.show_traffic_limit ? Math.max(0, Math.floor(p.upload_bytes || 0)) : 0;
@@ -776,8 +776,11 @@ app.get('/:token', (req, res) => {
   res.setHeader('subscription-auto-update-enable', '1');
   res.setHeader('profile-update-interval', String(Math.max(1, db.settings?.profile_update_interval || 2)));
   if (profileTitle) res.setHeader('profile-title', `base64:${Buffer.from(profileTitle).toString('base64')}`);
-  if (db.settings?.announcement) res.setHeader('announce', db.settings.announcement);
-  if (db.settings?.announcement) res.setHeader('announcement', db.settings.announcement);
+  if (db.settings?.announcement) {
+    const encodedAnnouncement = Buffer.from(db.settings.announcement).toString('base64');
+    res.setHeader('announce', encodedAnnouncement);
+    res.setHeader('announcement', encodedAnnouncement);
+  }
   res.setHeader('subscription-userinfo', userinfo);
   res.send(generateSubscription(profile));
 });

@@ -771,7 +771,7 @@ function generateSubscription(profile: Profile): string {
   const meta: string[] = [];
   meta.push('#subscription-auto-update-enable: 1');
   meta.push(`#profile-update-interval: ${Math.max(1, settings.profile_update_interval || 2)}`);
-  if (settings.announcement) meta.push(`#announce: ${settings.announcement}`);
+  if (settings.announcement) meta.push(`#announce: ${Buffer.from(settings.announcement).toString('base64')}`);
   if (settings.show_traffic_limit || settings.show_expiration) {
     const total = settings.show_traffic_limit ? Math.max(0, Math.floor((p.limit_gb || 0) * 1024 * 1024 * 1024)) : 0;
     const upload = settings.show_traffic_limit ? Math.max(0, Math.floor(p.upload_bytes || 0)) : 0;
