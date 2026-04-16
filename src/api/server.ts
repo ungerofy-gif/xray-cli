@@ -301,17 +301,35 @@ function setIfPresent(params: URLSearchParams, key: string, value: unknown) {
   if (s) params.set(key, s);
 }
 
+function pickRealityShortId(realitySettings: any): string {
+  if (!realitySettings) return '';
+  if (typeof realitySettings.shortId === 'string' && realitySettings.shortId.trim()) return realitySettings.shortId.trim();
+  if (Array.isArray(realitySettings.shortIds)) {
+    const first = realitySettings.shortIds.find((v: any) => typeof v === 'string' && v.trim());
+    if (first) return String(first).trim();
+  }
+  return '';
+}
+
 function applyCommonStreamParams(params: URLSearchParams, streamSettings: XrayStreamSettings) {
   setIfPresent(params, 'security', streamSettings.security);
   setIfPresent(params, 'type', streamSettings.network);
-  setIfPresent(params, 'sni', streamSettings.tlsSettings?.sni || streamSettings.tlsSettings?.serverName || streamSettings.sni);
+  setIfPresent(
+    params,
+    'sni',
+    streamSettings.tlsSettings?.sni
+      || streamSettings.tlsSettings?.serverName
+      || streamSettings.realitySettings?.serverName
+      || streamSettings.realitySettings?.dest
+      || streamSettings.sni
+  );
   setIfPresent(params, 'fp', streamSettings.tlsSettings?.fingerprint || streamSettings.fingerprint);
   if (streamSettings.tlsSettings?.alpn?.length) params.set('alpn', streamSettings.tlsSettings.alpn.join(','));
   else if (Array.isArray(streamSettings.alpn)) params.set('alpn', streamSettings.alpn.join(','));
   else setIfPresent(params, 'alpn', streamSettings.alpn);
 
   setIfPresent(params, 'pbk', streamSettings.realitySettings?.publicKey);
-  setIfPresent(params, 'sid', streamSettings.realitySettings?.shortId);
+  setIfPresent(params, 'sid', pickRealityShortId(streamSettings.realitySettings));
   setIfPresent(params, 'spx', streamSettings.realitySettings?.spiderX);
 
   if (streamSettings.network === 'ws') {
