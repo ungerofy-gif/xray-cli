@@ -32,6 +32,7 @@ interface Profile {
 interface Settings {
   subscription_title: string;
   announcement: string;
+  inbound_link_remarks: Record<string, string>;
   inbound_remarks: Record<string, string>;
   profile_update_interval: number;
   show_traffic_limit: number;
@@ -153,6 +154,7 @@ function loadDB(): Database {
       settings: {
         subscription_title: raw.settings?.subscription_title || '',
         announcement: raw.settings?.announcement || raw.settings?.server_description || '',
+        inbound_link_remarks: raw.settings?.inbound_link_remarks || {},
         inbound_remarks: raw.settings?.inbound_remarks || {},
         profile_update_interval: Number(raw.settings?.profile_update_interval ?? 2) || 2,
         show_traffic_limit: raw.settings?.show_traffic_limit === undefined ? 1 : (raw.settings?.show_traffic_limit ? 1 : 0),
@@ -166,6 +168,7 @@ function loadDB(): Database {
     settings: {
       subscription_title: '',
       announcement: '',
+      inbound_link_remarks: {},
       inbound_remarks: {},
       profile_update_interval: 2,
       show_traffic_limit: 1,
@@ -574,7 +577,7 @@ function generateSubscription(profile: Profile): string {
   const meta: string[] = [];
   meta.push('#subscription-auto-update-enable: 1');
   meta.push(`#profile-update-interval: ${Math.max(1, settingsRoot.profile_update_interval || 2)}`);
-  if (globalAnnouncement) meta.push(`#announcement: ${globalAnnouncement}`);
+  if (globalAnnouncement) meta.push(`#announce: ${globalAnnouncement}`);
   if (settingsRoot.show_traffic_limit || settingsRoot.show_expiration) {
     const total = settingsRoot.show_traffic_limit ? Math.max(0, Math.floor((p.limit_gb || 0) * 1024 * 1024 * 1024)) : 0;
     const upload = settingsRoot.show_traffic_limit ? Math.max(0, Math.floor(p.upload_bytes || 0)) : 0;
@@ -590,8 +593,9 @@ function generateSubscription(profile: Profile): string {
     const settings = ib.settings as any || {};
     
     const params = new URLSearchParams();
-    const inboundRemark = settingsRoot.inbound_remarks?.[ib.tag];
-    const title = `${ib.tag}`;
+    const inboundServerDescription = settingsRoot.inbound_remarks?.[ib.tag];
+    const inboundRemark = settingsRoot.inbound_link_remarks?.[ib.tag];
+    const title = `${inboundRemark || ib.tag}`;
     let serverDescription = '';
     
     if (ib.protocol === 'vmess') {
@@ -637,7 +641,7 @@ function generateSubscription(profile: Profile): string {
         if (streamSettings.quicSettings?.header?.type) vmess.type = streamSettings.quicSettings.header.type;
       }
 
-      const effectiveDesc = inboundRemark || '';
+      const effectiveDesc = inboundServerDescription || '';
       if (effectiveDesc) vmess.serverDescription = effectiveDesc;
       
       const encoded = Buffer.from(JSON.stringify(vmess)).toString('base64').replace(/=+$/, '');
@@ -649,7 +653,7 @@ function generateSubscription(profile: Profile): string {
       params.set('flow', 'xtls-rprx-vision');
       params.set('encryption', 'none');
       
-      const effectiveDesc = inboundRemark || '';
+      const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       if (serverDescription) params.set('serverDescription', serverDescription);
       const remark = encodeURIComponent(title);
@@ -659,7 +663,7 @@ function generateSubscription(profile: Profile): string {
       const password = settings.clients?.[0]?.password || p.uuid;
       applyCommonStreamParams(params, streamSettings);
       
-      const effectiveDesc = inboundRemark || '';
+      const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       if (serverDescription) params.set('serverDescription', serverDescription);
       const remark = encodeURIComponent(title);
@@ -673,7 +677,7 @@ function generateSubscription(profile: Profile): string {
       const ssPart = `${method}:${password}`;
       const ssEncoded = Buffer.from(ssPart).toString('base64').replace(/=+$/, '');
       
-      const effectiveDesc = inboundRemark || '';
+      const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
       const query = serverDescription ? `?serverDescription=${encodeURIComponent(serverDescription)}` : '';
@@ -696,7 +700,7 @@ function generateSubscription(profile: Profile): string {
       if (hySettings.upMbps) params.set('upmbps', String(hySettings.upMbps));
       if (hySettings.downMbps) params.set('downmbps', String(hySettings.downMbps));
       
-      const effectiveDesc = inboundRemark || '';
+      const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       if (serverDescription) params.set('serverDescription', serverDescription);
       const remark = encodeURIComponent(title);
@@ -710,7 +714,7 @@ function generateSubscription(profile: Profile): string {
       const allowedIPs = peer.allowedIPs?.join(',') || '0.0.0.0/0';
       const endpoint = peer.endpoint || `${serverAddress}:${ib.port}`;
       
-      const effectiveDesc = inboundRemark || '';
+      const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
       const paramsWg = new URLSearchParams();
@@ -771,6 +775,7 @@ app.get('/:token', (req, res) => {
   res.setHeader('subscription-auto-update-enable', '1');
   res.setHeader('profile-update-interval', String(Math.max(1, db.settings?.profile_update_interval || 2)));
   if (profileTitle) res.setHeader('profile-title', `base64:${Buffer.from(profileTitle).toString('base64')}`);
+  if (db.settings?.announcement) res.setHeader('announce', db.settings.announcement);
   if (db.settings?.announcement) res.setHeader('announcement', db.settings.announcement);
   res.setHeader('subscription-userinfo', userinfo);
   res.send(generateSubscription(profile));
@@ -864,6 +869,26 @@ app.patch('/api/inbounds/remarks/:tag', requireAuth, (req, res) => {
   else delete db.settings.inbound_remarks[tag];
   saveDB(db);
   res.json(db.settings.inbound_remarks);
+});
+
+app.get('/api/inbounds/link-remarks', requireAuth, (req, res) => {
+  const db = loadDB();
+  res.json(db.settings?.inbound_link_remarks || {});
+});
+
+app.patch('/api/inbounds/link-remarks/:tag', requireAuth, (req, res) => {
+  const db = loadDB();
+  const tag = normalizeText(req.params.tag);
+  const xrayInbounds = getXrayInbounds();
+  if (!tag || !xrayInbounds.find(ib => ib.tag === tag)) {
+    return res.status(400).json({ detail: 'Tag not found in Xray config' });
+  }
+  const value = normalizeText(req.body.remark);
+  if (!db.settings.inbound_link_remarks) db.settings.inbound_link_remarks = {};
+  if (value) db.settings.inbound_link_remarks[tag] = value;
+  else delete db.settings.inbound_link_remarks[tag];
+  saveDB(db);
+  res.json(db.settings.inbound_link_remarks);
 });
 
 app.get('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
@@ -1025,6 +1050,8 @@ app.patch('/api/settings', requireAuth, (req, res) => {
       : normalizeText(req.body.announcement);
   const inbound_remarks =
     req.body.inbound_remarks === undefined ? undefined : (typeof req.body.inbound_remarks === 'object' && req.body.inbound_remarks ? req.body.inbound_remarks : {});
+  const inbound_link_remarks =
+    req.body.inbound_link_remarks === undefined ? undefined : (typeof req.body.inbound_link_remarks === 'object' && req.body.inbound_link_remarks ? req.body.inbound_link_remarks : {});
   const profile_update_interval =
     req.body.profile_update_interval === undefined ? undefined : Number(req.body.profile_update_interval);
   const show_traffic_limit =
@@ -1035,6 +1062,7 @@ app.patch('/api/settings', requireAuth, (req, res) => {
   if (subscription_title !== undefined) db.settings.subscription_title = subscription_title;
   if (announcement !== undefined) db.settings.announcement = announcement;
   if (inbound_remarks !== undefined) db.settings.inbound_remarks = inbound_remarks as Record<string, string>;
+  if (inbound_link_remarks !== undefined) db.settings.inbound_link_remarks = inbound_link_remarks as Record<string, string>;
   if (profile_update_interval !== undefined && !Number.isNaN(profile_update_interval)) {
     db.settings.profile_update_interval = Math.max(1, Math.floor(profile_update_interval));
   }

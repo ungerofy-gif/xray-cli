@@ -32,6 +32,7 @@ interface Profile {
 interface Settings {
   subscription_title: string;
   announcement: string;
+  inbound_link_remarks: Record<string, string>;
   inbound_remarks: Record<string, string>;
   profile_update_interval: number;
   show_traffic_limit: number;
@@ -282,6 +283,7 @@ function loadDB(): Database {
       settings: {
         subscription_title: raw.settings?.subscription_title || '',
         announcement: raw.settings?.announcement || raw.settings?.server_description || '',
+        inbound_link_remarks: raw.settings?.inbound_link_remarks || {},
         inbound_remarks: raw.settings?.inbound_remarks || {},
         profile_update_interval: Number(raw.settings?.profile_update_interval ?? 2) || 2,
         show_traffic_limit: raw.settings?.show_traffic_limit === undefined ? 1 : (raw.settings?.show_traffic_limit ? 1 : 0),
@@ -295,6 +297,7 @@ function loadDB(): Database {
     settings: {
       subscription_title: '',
       announcement: '',
+      inbound_link_remarks: {},
       inbound_remarks: {},
       profile_update_interval: 2,
       show_traffic_limit: 1,
@@ -482,6 +485,7 @@ function getSettings(): Settings {
   return db.settings || {
     subscription_title: '',
     announcement: '',
+    inbound_link_remarks: {},
     inbound_remarks: {},
     profile_update_interval: 2,
     show_traffic_limit: 1,
@@ -761,7 +765,7 @@ function generateSubscription(profile: Profile): string {
   const meta: string[] = [];
   meta.push('#subscription-auto-update-enable: 1');
   meta.push(`#profile-update-interval: ${Math.max(1, settings.profile_update_interval || 2)}`);
-  if (settings.announcement) meta.push(`#announcement: ${settings.announcement}`);
+  if (settings.announcement) meta.push(`#announce: ${settings.announcement}`);
   if (settings.show_traffic_limit || settings.show_expiration) {
     const total = settings.show_traffic_limit ? Math.max(0, Math.floor((p.limit_gb || 0) * 1024 * 1024 * 1024)) : 0;
     const upload = settings.show_traffic_limit ? Math.max(0, Math.floor(p.upload_bytes || 0)) : 0;
@@ -775,10 +779,11 @@ function generateSubscription(profile: Profile): string {
     if (!p.inbound_tags?.includes(ib.tag)) continue;
     const streamSettings = getInboundStreamSettings(ib);
     const inboundSettings = (ib.settings as any) || {};
-    const inboundRemark = settings.inbound_remarks?.[ib.tag];
-    const title = `${titlePrefix}${ib.tag}`;
+    const inboundServerDescription = settings.inbound_remarks?.[ib.tag];
+    const inboundRemark = settings.inbound_link_remarks?.[ib.tag];
+    const title = `${titlePrefix}${inboundRemark || ib.tag}`;
     const remark = encodeURIComponent(title);
-    const effectiveDesc = inboundRemark || '';
+    const effectiveDesc = inboundServerDescription || '';
     const serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
     const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
     
@@ -927,7 +932,7 @@ async function manageInbounds(profileId: number) {
     const currentTags = profile.inbound_tags || [];
     const lines = ['Available inbounds', '-'.repeat(20)];
 
-    const globalInboundRemarks = getSettings().inbound_remarks || {};
+    const globalInboundRemarks = getSettings().inbound_link_remarks || {};
     for (const ib of xrayInbounds) {
       const selected = currentTags.includes(ib.tag) ? '[x]' : '[ ]';
       const inboundRemark = globalInboundRemarks[ib.tag] || '-';
@@ -1175,7 +1180,8 @@ async function main() {
           '4. Toggle Show Traffic Limit',
           '5. Toggle Show Expiration',
           '6. Edit Profile',
-          '7. Set Global Inbound Remark',
+          '7. Set Global Inbound ServerDescription',
+          '8. Set Global Inbound Remark',
           '0. Back'
         ]);
 
@@ -1229,6 +1235,21 @@ async function main() {
             const value = promptCentered(`ServerDescription for ${tag} (${current || 'empty'}): `);
             setGlobalInboundRemark(tag, value);
             console.log('✓ Per-inbound serverDescription updated');
+          }
+        } else if (s === '8') {
+          const tag = promptCentered('Inbound tag: ');
+          const xrayInbounds = getXrayInbounds();
+          if (!tag || !xrayInbounds.find(ib => ib.tag === tag)) {
+            console.log('✗ Inbound tag not found');
+          } else {
+            const current = settings.inbound_link_remarks?.[tag] || '';
+            const value = promptCentered(`Remark for ${tag} (${current || 'empty'}): `);
+            const db = loadDB();
+            if (!db.settings.inbound_link_remarks) db.settings.inbound_link_remarks = {};
+            if (value.trim()) db.settings.inbound_link_remarks[tag] = value.trim();
+            else delete db.settings.inbound_link_remarks[tag];
+            saveDB(db);
+            console.log('✓ Per-inbound remark updated');
           }
         } else {
           break;
