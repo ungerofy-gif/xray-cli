@@ -31,6 +31,7 @@ interface Profile {
 
 interface Settings {
   subscription_title: string;
+  subscription_domain: string;
   announcement: string;
   inbound_link_remarks: Record<string, string>;
   inbound_remarks: Record<string, string>;
@@ -153,6 +154,7 @@ function loadDB(): Database {
       }),
       settings: {
         subscription_title: raw.settings?.subscription_title || '',
+        subscription_domain: raw.settings?.subscription_domain || '',
         announcement: raw.settings?.announcement || raw.settings?.server_description || '',
         inbound_link_remarks: raw.settings?.inbound_link_remarks || {},
         inbound_remarks: raw.settings?.inbound_remarks || {},
@@ -167,6 +169,7 @@ function loadDB(): Database {
     profiles: [],
     settings: {
       subscription_title: '',
+      subscription_domain: '',
       announcement: '',
       inbound_link_remarks: {},
       inbound_remarks: {},
@@ -581,18 +584,10 @@ interface SubscriptionPayload {
 
 type SubscriptionClient =
   | 'default'
-  | 'raw'
   | 'v2rayn'
-  | 'v2rayng'
-  | 'nekobox'
-  | 'happ'
-  | 'hiddify'
-  | 'shadowrocket'
   | 'clash'
   | 'mihomo'
-  | 'clash-meta'
-  | 'sing-box'
-  | 'singbox';
+  | 'clash-meta';
 
 interface RenderedSubscription {
   contentType: string;
@@ -600,26 +595,22 @@ interface RenderedSubscription {
   format: 'base64' | 'uri' | 'text';
 }
 
+const SUPPORTED_SUBSCRIPTION_CLIENTS: SubscriptionClient[] = [
+  'default',
+  'v2rayn',
+  'clash',
+  'mihomo',
+  'clash-meta'
+];
+
 const SUBSCRIPTION_CLIENT_ALIASES: Record<string, SubscriptionClient> = {
   default: 'default',
   base64: 'default',
-  raw: 'raw',
-  plain: 'raw',
-  text: 'raw',
   v2rayn: 'v2rayn',
-  v2rayng: 'v2rayng',
-  nekobox: 'nekobox',
-  neko: 'nekobox',
-  happ: 'happ',
-  hiddify: 'hiddify',
-  shadowrocket: 'shadowrocket',
   clash: 'clash',
   mihomo: 'mihomo',
   'clash-meta': 'clash-meta',
-  clashmeta: 'clash-meta',
-  'sing-box': 'sing-box',
-  singbox: 'singbox',
-  sing: 'singbox'
+  clashmeta: 'clash-meta'
 };
 
 function toBase64Subscription(lines: string[]): string {
@@ -808,46 +799,57 @@ function detectRequestedClient(req: express.Request): string | undefined {
 function renderSubscriptionByClient(client: SubscriptionClient, payload: SubscriptionPayload): RenderedSubscription {
   const uriOnly = payload.links;
   const withMeta = [...payload.meta, ...payload.links];
-  const base64Clients: SubscriptionClient[] = ['default', 'v2rayn', 'v2rayng', 'nekobox', 'happ', 'hiddify', 'shadowrocket'];
-  const uriClients: SubscriptionClient[] = ['raw', 'clash', 'mihomo', 'clash-meta', 'sing-box', 'singbox'];
-
-  if (base64Clients.includes(client)) {
-    return {
+  const formatters: Record<SubscriptionClient, () => RenderedSubscription> = {
+    // Keep backward-compatible default output with metadata comments + URI links encoded as base64 text.
+    default: () => ({
       contentType: 'text/plain; charset=utf-8',
-      body: toBase64Subscription(client === 'default' ? withMeta : uriOnly),
+      body: toBase64Subscription(withMeta),
       format: 'base64'
-    };
-  }
-
-  if (uriClients.includes(client)) {
-    return {
+    }),
+    // v2ray-family import expects share links, not comment metadata lines.
+    v2rayn: () => ({
+      contentType: 'text/plain; charset=utf-8',
+      body: toBase64Subscription(uriOnly),
+      format: 'base64'
+    }),
+    // Mihomo/Clash supports URI-type providers directly as plain URI lists.
+    clash: () => ({
       contentType: 'text/plain; charset=utf-8',
       body: uriOnly.join('\n'),
       format: 'uri'
-    };
-  }
-
-  return {
-    contentType: 'text/plain; charset=utf-8',
-    body: toBase64Subscription(withMeta),
-    format: 'base64'
+    }),
+    mihomo: () => ({
+      contentType: 'text/plain; charset=utf-8',
+      body: uriOnly.join('\n'),
+      format: 'uri'
+    }),
+    'clash-meta': () => ({
+      contentType: 'text/plain; charset=utf-8',
+      body: uriOnly.join('\n'),
+      format: 'uri'
+    })
   };
+
+  return (formatters[client] || formatters.default)();
 }
 
-function buildSubscriptionUrls(profile: Profile): Record<string, string> {
-  const host = API_HOST || '127.0.0.1';
-  const base = `http://${host}:${API_PORT}/${profile.sub_uuid}`;
+function normalizeSubscriptionDomain(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  return trimmed.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+}
+
+function buildSubscriptionUrls(profile: Profile, settings: Settings): Record<string, string> {
+  const customDomain = normalizeSubscriptionDomain(settings.subscription_domain || '');
+  const base = customDomain
+    ? `https://${customDomain}/${profile.sub_uuid}`
+    : `http://${API_HOST || '127.0.0.1'}:${API_PORT}/${profile.sub_uuid}`;
   return {
     default: base,
     v2rayn: `${base}?v2rayn`,
-    v2rayng: `${base}?v2rayng`,
-    nekobox: `${base}?nekobox`,
-    shadowrocket: `${base}?shadowrocket`,
     clash: `${base}?clash`,
     mihomo: `${base}?mihomo`,
-    singbox: `${base}?sing-box`,
-    hiddify: `${base}?hiddify`,
-    happ: `${base}?happ`
+    clash_meta: `${base}?clash-meta`
   };
 }
 
@@ -1177,6 +1179,8 @@ app.patch('/api/settings', requireAuth, (req, res) => {
   const db = loadDB();
   const subscription_title =
     req.body.subscription_title === undefined ? undefined : normalizeText(req.body.subscription_title);
+  const subscription_domain =
+    req.body.subscription_domain === undefined ? undefined : normalizeText(req.body.subscription_domain);
   const announcement =
     req.body.announcement === undefined
       ? (req.body.server_description === undefined ? undefined : normalizeText(req.body.server_description))
@@ -1193,6 +1197,7 @@ app.patch('/api/settings', requireAuth, (req, res) => {
     req.body.show_expiration === undefined ? undefined : (req.body.show_expiration ? 1 : 0);
 
   if (subscription_title !== undefined) db.settings.subscription_title = subscription_title;
+  if (subscription_domain !== undefined) db.settings.subscription_domain = subscription_domain;
   if (announcement !== undefined) db.settings.announcement = announcement;
   if (inbound_remarks !== undefined) db.settings.inbound_remarks = inbound_remarks as Record<string, string>;
   if (inbound_link_remarks !== undefined) db.settings.inbound_link_remarks = inbound_link_remarks as Record<string, string>;
@@ -1220,8 +1225,8 @@ app.get('/api/profiles/:id/subscription', requireAuth, (req, res) => {
     profile_title: db.settings?.subscription_title || '',
     userinfo,
     links: payload.links,
-    urls: buildSubscriptionUrls(profile),
-    supported_clients: Object.keys(SUBSCRIPTION_CLIENT_ALIASES).sort()
+    urls: buildSubscriptionUrls(profile, db.settings),
+    supported_clients: SUPPORTED_SUBSCRIPTION_CLIENTS
   });
 });
 

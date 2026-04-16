@@ -31,6 +31,7 @@ interface Profile {
 
 interface Settings {
   subscription_title: string;
+  subscription_domain: string;
   announcement: string;
   inbound_link_remarks: Record<string, string>;
   inbound_remarks: Record<string, string>;
@@ -288,6 +289,7 @@ function loadDB(): Database {
       }),
       settings: {
         subscription_title: raw.settings?.subscription_title || '',
+        subscription_domain: raw.settings?.subscription_domain || '',
         announcement: raw.settings?.announcement || raw.settings?.server_description || '',
         inbound_link_remarks: raw.settings?.inbound_link_remarks || {},
         inbound_remarks: raw.settings?.inbound_remarks || {},
@@ -302,6 +304,7 @@ function loadDB(): Database {
     profiles: [],
     settings: {
       subscription_title: '',
+      subscription_domain: '',
       announcement: '',
       inbound_link_remarks: {},
       inbound_remarks: {},
@@ -447,21 +450,24 @@ function getProfileByUsername(username: string): Profile | undefined {
   return db.profiles.find(p => p.username.toLowerCase() === normalized);
 }
 
+function normalizeSubscriptionDomain(value: string): string {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return '';
+  return trimmed.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+}
+
 function buildSubscriptionUrls(profile: Profile): Record<string, string> {
+  const settings = getSettings();
+  const customDomain = normalizeSubscriptionDomain(settings.subscription_domain || '');
   const host = process.env.API_HOST || '127.0.0.1';
   const port = Number(process.env.API_PORT) || 2053;
-  const base = `http://${host}:${port}/${profile.sub_uuid}`;
+  const base = customDomain ? `https://${customDomain}/${profile.sub_uuid}` : `http://${host}:${port}/${profile.sub_uuid}`;
   return {
     default: base,
     v2rayn: `${base}?v2rayn`,
-    v2rayng: `${base}?v2rayng`,
-    nekobox: `${base}?nekobox`,
-    shadowrocket: `${base}?shadowrocket`,
     clash: `${base}?clash`,
     mihomo: `${base}?mihomo`,
-    singbox: `${base}?sing-box`,
-    hiddify: `${base}?hiddify`,
-    happ: `${base}?happ`
+    clash_meta: `${base}?clash-meta`
   };
 }
 
@@ -563,6 +569,7 @@ function getSettings(): Settings {
   const db = loadDB();
   return db.settings || {
     subscription_title: '',
+    subscription_domain: '',
     announcement: '',
     inbound_link_remarks: {},
     inbound_remarks: {},
@@ -1085,14 +1092,9 @@ async function subscriptionUrl(profileId: number) {
     '',
     'Client Specific',
     `v2rayN: ${urls.v2rayn}`,
-    `v2rayNG: ${urls.v2rayng}`,
-    `NekoBox: ${urls.nekobox}`,
-    `Shadowrocket: ${urls.shadowrocket}`,
-    `Clash/Mihomo: ${urls.clash}`,
+    `Clash: ${urls.clash}`,
     `Mihomo (alias): ${urls.mihomo}`,
-    `sing-box: ${urls.singbox}`,
-    `Hiddify: ${urls.hiddify}`,
-    `Happ: ${urls.happ}`
+    `Clash Meta: ${urls.clash_meta}`
   ];
   
   clear();
@@ -1272,19 +1274,21 @@ async function main() {
           `Config: ${XRAY_CONFIG_PATH}`,
           `Database: ${DB_PATH}`,
           `Subscription Title: ${settings.subscription_title || '(default)'}`,
+          `Subscription Domain: ${settings.subscription_domain || '(not set)'}`,
           `Announcement: ${settings.announcement || '(none)'}`,
           `Auto Update Interval (h): ${settings.profile_update_interval || 2}`,
           `Show Traffic Limit: ${settings.show_traffic_limit ? 'ON' : 'OFF'}`,
           `Show Expiration: ${settings.show_expiration ? 'ON' : 'OFF'}`,
           '',
           '1. Set Subscription Title',
-          '2. Set Announcement (global)',
-          '3. Set Auto Update Interval (hours)',
-          '4. Toggle Show Traffic Limit',
-          '5. Toggle Show Expiration',
-          '6. Edit Profile',
-          '7. Set Global Inbound ServerDescription',
-          '8. Set Global Inbound Remark',
+          '2. Set Subscription Domain (domain:port)',
+          '3. Set Announcement (global)',
+          '4. Set Auto Update Interval (hours)',
+          '5. Toggle Show Traffic Limit',
+          '6. Toggle Show Expiration',
+          '7. Edit Profile',
+          '8. Set Global Inbound ServerDescription',
+          '9. Set Global Inbound Remark',
           '0. Back'
         ]);
 
@@ -1294,20 +1298,24 @@ async function main() {
           updateSettings({ subscription_title: title });
           showMessage('Subscription title updated');
         } else if (s === '2') {
+          const domain = promptCentered('Subscription domain (example.com:6000, empty to unset): ');
+          updateSettings({ subscription_domain: domain.trim() });
+          showMessage('Subscription domain updated');
+        } else if (s === '3') {
           const desc = promptCentered('Announcement: ');
           updateSettings({ announcement: desc });
           showMessage('Announcement updated');
-        } else if (s === '3') {
+        } else if (s === '4') {
           const hours = Number(promptCentered(`Auto update interval hours (${settings.profile_update_interval || 2}): `) || '2');
           updateSettings({ profile_update_interval: Math.max(1, Math.floor(hours || 2)) });
           showMessage('Auto update interval saved');
-        } else if (s === '4') {
+        } else if (s === '5') {
           updateSettings({ show_traffic_limit: settings.show_traffic_limit ? 0 : 1 });
           showMessage('Traffic-limit display updated');
-        } else if (s === '5') {
+        } else if (s === '6') {
           updateSettings({ show_expiration: settings.show_expiration ? 0 : 1 });
           showMessage('Expiration display updated');
-        } else if (s === '6') {
+        } else if (s === '7') {
           const username = promptCentered('Username: ');
           const profile = getProfileByUsername(username);
           if (profile) {
@@ -1328,7 +1336,7 @@ async function main() {
           } else {
             showMessage('Username not found', false);
           }
-        } else if (s === '7') {
+        } else if (s === '8') {
           const tag = promptCentered('Inbound tag: ');
           const xrayInbounds = getXrayInbounds();
           if (!tag || !xrayInbounds.find(ib => ib.tag === tag)) {
@@ -1339,7 +1347,7 @@ async function main() {
             setGlobalInboundRemark(tag, value);
             showMessage('Per-inbound serverDescription updated');
           }
-        } else if (s === '8') {
+        } else if (s === '9') {
           const tag = promptCentered('Inbound tag: ');
           const xrayInbounds = getXrayInbounds();
           if (!tag || !xrayInbounds.find(ib => ib.tag === tag)) {
