@@ -354,6 +354,10 @@ function buildRemarkFragment(title: string, serverDescriptionBase64: string): st
   return `${remark}?serverDescription=${encodeURIComponent(serverDescriptionBase64)}`;
 }
 
+function toHeaderSafeBase64(value: string): string {
+  return Buffer.from(value, 'utf8').toString('base64');
+}
+
 function pickRandomString(values: unknown[]): string {
   const pool = values.filter(v => typeof v === 'string' && String(v).trim()).map(v => String(v).trim());
   if (pool.length === 0) return '';
@@ -777,8 +781,9 @@ app.get('/:token', (req, res) => {
   res.setHeader('profile-update-interval', String(Math.max(1, db.settings?.profile_update_interval || 2)));
   if (profileTitle) res.setHeader('profile-title', `base64:${Buffer.from(profileTitle).toString('base64')}`);
   if (db.settings?.announcement) {
-    res.setHeader('announce', db.settings.announcement);
-    res.setHeader('announcement', db.settings.announcement);
+    const encoded = toHeaderSafeBase64(db.settings.announcement);
+    res.setHeader('announce', encoded);
+    res.setHeader('announcement', encoded);
   }
   res.setHeader('subscription-userinfo', userinfo);
   res.send(generateSubscription(profile));
