@@ -23,10 +23,8 @@ interface Profile {
   expires_at: string;
   sub_uuid: string;
   inbound_tags: string[];
-  inbound_remarks: Record<string, string>;
   server_address: string;
   remark: string;
-  server_description: string;
   created_at: string;
   updated_at: string;
 }
@@ -34,6 +32,7 @@ interface Profile {
 interface Settings {
   subscription_title: string;
   server_description: string;
+  inbound_remarks: Record<string, string>;
   profile_update_interval: number;
   show_traffic_limit: number;
   show_expiration: number;
@@ -135,22 +134,26 @@ function loadDB(): Database {
   if (existsSync(DB_PATH)) {
     const raw = JSON.parse(readFileSync(DB_PATH, 'utf8'));
     return {
-      profiles: (raw.profiles || []).map((p: any) => ({
-        ...p,
+      profiles: (raw.profiles || []).map((p: any) => {
+        const normalized: any = {
+          ...p,
         flow: p.flow || 'xtls-rprx-vision',
         limit_gb: Number(p.limit_gb ?? p.total_gb ?? 0) || 0,
         upload_bytes: Number(p.upload_bytes ?? 0) || 0,
         download_bytes: Number(p.download_bytes ?? 0) || 0,
         expire_days: Number(p.expire_days ?? 0) || 0,
         expires_at: p.expires_at || '',
-        inbound_remarks: p.inbound_remarks || {},
         server_address: p.server_address || '',
-        remark: p.remark || p.username || '',
-        server_description: p.server_description || ''
-      })),
+        remark: p.remark || p.username || ''
+        };
+        delete normalized.inbound_remarks;
+        delete normalized.server_description;
+        return normalized as Profile;
+      }),
       settings: {
         subscription_title: raw.settings?.subscription_title || '',
         server_description: raw.settings?.server_description || '',
+        inbound_remarks: raw.settings?.inbound_remarks || {},
         profile_update_interval: Number(raw.settings?.profile_update_interval ?? 2) || 2,
         show_traffic_limit: raw.settings?.show_traffic_limit === undefined ? 1 : (raw.settings?.show_traffic_limit ? 1 : 0),
         show_expiration: raw.settings?.show_expiration === undefined ? 1 : (raw.settings?.show_expiration ? 1 : 0)
@@ -163,6 +166,7 @@ function loadDB(): Database {
     settings: {
       subscription_title: '',
       server_description: '',
+      inbound_remarks: {},
       profile_update_interval: 2,
       show_traffic_limit: 1,
       show_expiration: 1
@@ -585,7 +589,7 @@ function generateSubscription(profile: Profile): string {
     const settings = ib.settings as any || {};
     
     const params = new URLSearchParams();
-    const inboundRemark = p.inbound_remarks?.[ib.tag];
+    const inboundRemark = settingsRoot.inbound_remarks?.[ib.tag];
     const title = `${inboundRemark || ib.tag}`;
     let serverDescription = '';
     
@@ -632,7 +636,7 @@ function generateSubscription(profile: Profile): string {
         if (streamSettings.quicSettings?.header?.type) vmess.type = streamSettings.quicSettings.header.type;
       }
 
-      const effectiveDesc = p.server_description || globalServerDescription;
+      const effectiveDesc = globalServerDescription;
       if (effectiveDesc) vmess.serverDescription = effectiveDesc;
       
       const encoded = Buffer.from(JSON.stringify(vmess)).toString('base64').replace(/=+$/, '');
@@ -644,7 +648,7 @@ function generateSubscription(profile: Profile): string {
       params.set('flow', 'xtls-rprx-vision');
       params.set('encryption', 'none');
       
-      const effectiveDesc = p.server_description || globalServerDescription;
+      const effectiveDesc = globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       if (serverDescription) params.set('serverDescription', serverDescription);
       const remark = encodeURIComponent(title);
@@ -654,7 +658,7 @@ function generateSubscription(profile: Profile): string {
       const password = settings.clients?.[0]?.password || p.uuid;
       applyCommonStreamParams(params, streamSettings);
       
-      const effectiveDesc = p.server_description || globalServerDescription;
+      const effectiveDesc = globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       if (serverDescription) params.set('serverDescription', serverDescription);
       const remark = encodeURIComponent(title);
@@ -668,7 +672,7 @@ function generateSubscription(profile: Profile): string {
       const ssPart = `${method}:${password}`;
       const ssEncoded = Buffer.from(ssPart).toString('base64').replace(/=+$/, '');
       
-      const effectiveDesc = p.server_description || globalServerDescription;
+      const effectiveDesc = globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
       const query = serverDescription ? `?serverDescription=${encodeURIComponent(serverDescription)}` : '';
@@ -691,7 +695,7 @@ function generateSubscription(profile: Profile): string {
       if (hySettings.upMbps) params.set('upmbps', String(hySettings.upMbps));
       if (hySettings.downMbps) params.set('downmbps', String(hySettings.downMbps));
       
-      const effectiveDesc = p.server_description || globalServerDescription;
+      const effectiveDesc = globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       if (serverDescription) params.set('serverDescription', serverDescription);
       const remark = encodeURIComponent(title);
@@ -705,7 +709,7 @@ function generateSubscription(profile: Profile): string {
       const allowedIPs = peer.allowedIPs?.join(',') || '0.0.0.0/0';
       const endpoint = peer.endpoint || `${serverAddress}:${ib.port}`;
       
-      const effectiveDesc = p.server_description || globalServerDescription;
+      const effectiveDesc = globalServerDescription;
       serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
       const remark = encodeURIComponent(title);
       const paramsWg = new URLSearchParams();
@@ -787,7 +791,7 @@ app.post('/api/profiles', requireAuth, (req, res) => {
   const username = normalizeText(req.body.username);
   const server_address = normalizeText(req.body.server_address);
   const remark = normalizeText(req.body.remark);
-  const server_description = normalizeText(req.body.server_description);
+  const add_all_inbounds = !!req.body.add_all_inbounds;
   const limit_gb = Number(req.body.limit_gb ?? 0) || 0;
   const expire_days = Number(req.body.expire_days ?? 0) || 0;
   if (!username) return res.status(400).json({ detail: 'Username required' });
@@ -808,11 +812,9 @@ app.post('/api/profiles', requireAuth, (req, res) => {
     expire_days: Math.max(0, Math.floor(expire_days)),
     expires_at: expire_days > 0 ? new Date(Date.now() + Math.floor(expire_days) * 86400000).toISOString() : '',
     sub_uuid: generateUniqueToken(db),
-    inbound_tags: [],
-    inbound_remarks: {},
+    inbound_tags: add_all_inbounds ? getXrayInbounds().map(ib => ib.tag) : [],
     server_address: server_address || '',
     remark: remark || username,
-    server_description: server_description || '',
     created_at: now,
     updated_at: now
   };
@@ -842,6 +844,26 @@ app.get('/api/inbounds', requireAuth, (req, res) => {
   res.json(getXrayInbounds());
 });
 
+app.get('/api/inbounds/remarks', requireAuth, (req, res) => {
+  const db = loadDB();
+  res.json(db.settings?.inbound_remarks || {});
+});
+
+app.patch('/api/inbounds/remarks/:tag', requireAuth, (req, res) => {
+  const db = loadDB();
+  const tag = normalizeText(req.params.tag);
+  const xrayInbounds = getXrayInbounds();
+  if (!tag || !xrayInbounds.find(ib => ib.tag === tag)) {
+    return res.status(400).json({ detail: 'Tag not found in Xray config' });
+  }
+  const value = normalizeText(req.body.remark);
+  if (!db.settings.inbound_remarks) db.settings.inbound_remarks = {};
+  if (value) db.settings.inbound_remarks[tag] = value;
+  else delete db.settings.inbound_remarks[tag];
+  saveDB(db);
+  res.json(db.settings.inbound_remarks);
+});
+
 app.get('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
   const db = loadDB();
   const profile = getProfileById(db, req.params.id);
@@ -854,10 +876,18 @@ app.post('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
   const profile = getProfileById(db, req.params.id);
   if (!profile) return res.status(404).json({ detail: 'Profile not found' });
   
+  const xrayInbounds = getXrayInbounds();
+  const assignAll = !!req.body.all;
+  if (assignAll) {
+    profile.inbound_tags = xrayInbounds.map(ib => ib.tag);
+    profile.updated_at = new Date().toISOString();
+    saveDB(db);
+    saveConfigAndReload();
+    return res.json(profile.inbound_tags);
+  }
+
   const tag = normalizeText(req.body.tag);
   if (!tag) return res.status(400).json({ detail: 'tag required' });
-  
-  const xrayInbounds = getXrayInbounds();
   if (!xrayInbounds.find(ib => ib.tag === tag)) {
     return res.status(400).json({ detail: 'Tag not found in Xray config' });
   }
@@ -950,7 +980,6 @@ app.patch('/api/profiles/:id', requireAuth, (req, res) => {
   const username = req.body.username === undefined ? undefined : normalizeText(req.body.username);
   const server_address = req.body.server_address === undefined ? undefined : normalizeText(req.body.server_address);
   const remark = req.body.remark === undefined ? undefined : normalizeText(req.body.remark);
-  const server_description = req.body.server_description === undefined ? undefined : normalizeText(req.body.server_description);
   const limit_gb = req.body.limit_gb === undefined ? undefined : Number(req.body.limit_gb);
   const expire_days = req.body.expire_days === undefined ? undefined : Number(req.body.expire_days);
   const flow = req.body.flow === undefined ? undefined : normalizeText(req.body.flow);
@@ -964,7 +993,6 @@ app.patch('/api/profiles/:id', requireAuth, (req, res) => {
   }
   if (server_address !== undefined) profile.server_address = server_address;
   if (remark !== undefined) profile.remark = remark || profile.username;
-  if (server_description !== undefined) profile.server_description = server_description;
   if (limit_gb !== undefined && !Number.isNaN(limit_gb)) profile.limit_gb = Math.max(0, limit_gb);
   if (expire_days !== undefined && !Number.isNaN(expire_days)) {
     const days = Math.max(0, Math.floor(expire_days));
@@ -991,6 +1019,8 @@ app.patch('/api/settings', requireAuth, (req, res) => {
     req.body.subscription_title === undefined ? undefined : normalizeText(req.body.subscription_title);
   const server_description =
     req.body.server_description === undefined ? undefined : normalizeText(req.body.server_description);
+  const inbound_remarks =
+    req.body.inbound_remarks === undefined ? undefined : (typeof req.body.inbound_remarks === 'object' && req.body.inbound_remarks ? req.body.inbound_remarks : {});
   const profile_update_interval =
     req.body.profile_update_interval === undefined ? undefined : Number(req.body.profile_update_interval);
   const show_traffic_limit =
@@ -1000,6 +1030,7 @@ app.patch('/api/settings', requireAuth, (req, res) => {
 
   if (subscription_title !== undefined) db.settings.subscription_title = subscription_title;
   if (server_description !== undefined) db.settings.server_description = server_description;
+  if (inbound_remarks !== undefined) db.settings.inbound_remarks = inbound_remarks as Record<string, string>;
   if (profile_update_interval !== undefined && !Number.isNaN(profile_update_interval)) {
     db.settings.profile_update_interval = Math.max(1, Math.floor(profile_update_interval));
   }

@@ -23,10 +23,8 @@ interface Profile {
   expires_at: string;
   sub_uuid: string;
   inbound_tags: string[];
-  inbound_remarks: Record<string, string>;
   server_address: string;
   remark: string;
-  server_description: string;
   created_at: string;
   updated_at: string;
 }
@@ -34,6 +32,7 @@ interface Profile {
 interface Settings {
   subscription_title: string;
   server_description: string;
+  inbound_remarks: Record<string, string>;
   profile_update_interval: number;
   show_traffic_limit: number;
   show_expiration: number;
@@ -264,8 +263,9 @@ function loadDB(): Database {
   if (existsSync(DB_PATH)) {
     const raw = JSON.parse(readFileSync(DB_PATH, 'utf8'));
     return {
-      profiles: (raw.profiles || []).map((p: any) => ({
-        ...p,
+      profiles: (raw.profiles || []).map((p: any) => {
+        const normalized: any = {
+          ...p,
         flow: p.flow || 'xtls-rprx-vision',
         limit_gb: Number(p.limit_gb ?? p.total_gb ?? 0) || 0,
         upload_bytes: Number(p.upload_bytes ?? 0) || 0,
@@ -273,13 +273,16 @@ function loadDB(): Database {
         expire_days: Number(p.expire_days ?? 0) || 0,
         expires_at: p.expires_at || '',
         server_address: p.server_address || '',
-        remark: p.remark || p.username || '',
-        inbound_remarks: p.inbound_remarks || {},
-        server_description: p.server_description || ''
-      })),
+        remark: p.remark || p.username || ''
+        };
+        delete normalized.inbound_remarks;
+        delete normalized.server_description;
+        return normalized as Profile;
+      }),
       settings: {
         subscription_title: raw.settings?.subscription_title || '',
         server_description: raw.settings?.server_description || '',
+        inbound_remarks: raw.settings?.inbound_remarks || {},
         profile_update_interval: Number(raw.settings?.profile_update_interval ?? 2) || 2,
         show_traffic_limit: raw.settings?.show_traffic_limit === undefined ? 1 : (raw.settings?.show_traffic_limit ? 1 : 0),
         show_expiration: raw.settings?.show_expiration === undefined ? 1 : (raw.settings?.show_expiration ? 1 : 0)
@@ -292,6 +295,7 @@ function loadDB(): Database {
     settings: {
       subscription_title: '',
       server_description: '',
+      inbound_remarks: {},
       profile_update_interval: 2,
       show_traffic_limit: 1,
       show_expiration: 1
@@ -393,7 +397,7 @@ function createProfile(
   username: string,
   serverAddress?: string,
   remark?: string,
-  serverDescription?: string,
+  addAllInbounds?: boolean,
   limitGb?: number,
   expireDays?: number
 ) {
@@ -414,11 +418,9 @@ function createProfile(
     expire_days: ttlDays,
     expires_at: expiresAt,
     sub_uuid: generateUniqueToken(db),
-    inbound_tags: [],
-    inbound_remarks: {},
+    inbound_tags: addAllInbounds ? getXrayInbounds().map(ib => ib.tag) : [],
     server_address: serverAddress || '',
     remark: remark || username,
-    server_description: serverDescription || '',
     created_at: now,
     updated_at: now
   };
@@ -453,15 +455,12 @@ function setProfileInboundTags(profileId: number, tags: string[]) {
   saveDB(db);
 }
 
-function setProfileInboundRemark(profileId: number, tag: string, remark: string) {
+function setGlobalInboundRemark(tag: string, remark: string) {
   const db = loadDB();
-  const profile = db.profiles.find(p => p.id === profileId);
-  if (!profile) return;
-  if (!profile.inbound_remarks) profile.inbound_remarks = {};
+  if (!db.settings.inbound_remarks) db.settings.inbound_remarks = {};
   if (!tag) return;
-  if (remark.trim()) profile.inbound_remarks[tag] = remark.trim();
-  else delete profile.inbound_remarks[tag];
-  profile.updated_at = new Date().toISOString();
+  if (remark.trim()) db.settings.inbound_remarks[tag] = remark.trim();
+  else delete db.settings.inbound_remarks[tag];
   saveDB(db);
 }
 
@@ -483,6 +482,7 @@ function getSettings(): Settings {
   return db.settings || {
     subscription_title: '',
     server_description: '',
+    inbound_remarks: {},
     profile_update_interval: 2,
     show_traffic_limit: 1,
     show_expiration: 1
@@ -499,7 +499,6 @@ function updateProfileSettings(
   id: number,
   serverAddress?: string,
   remark?: string,
-  serverDescription?: string,
   limitGb?: number,
   expireDays?: number
 ) {
@@ -509,7 +508,6 @@ function updateProfileSettings(
   
   if (serverAddress !== undefined) profile.server_address = serverAddress;
   if (remark !== undefined) profile.remark = remark;
-  if (serverDescription !== undefined) profile.server_description = serverDescription;
   if (limitGb !== undefined) profile.limit_gb = Math.max(0, Number(limitGb || 0));
   if (expireDays !== undefined) {
     const ttlDays = Math.max(0, Math.floor(Number(expireDays || 0)));
@@ -776,10 +774,10 @@ function generateSubscription(profile: Profile): string {
     if (!p.inbound_tags?.includes(ib.tag)) continue;
     const streamSettings = getInboundStreamSettings(ib);
     const inboundSettings = (ib.settings as any) || {};
-    const inboundRemark = p.inbound_remarks?.[ib.tag];
+    const inboundRemark = settings.inbound_remarks?.[ib.tag];
     const title = `${titlePrefix}${inboundRemark || ib.tag}`;
     const remark = encodeURIComponent(title);
-    const effectiveDesc = p.server_description || settings.server_description || '';
+    const effectiveDesc = settings.server_description || '';
     const serverDescription = effectiveDesc ? Buffer.from(effectiveDesc).toString('base64') : '';
     const descParam = serverDescription ? `?serverDescription=${serverDescription}` : '';
     
@@ -928,9 +926,10 @@ async function manageInbounds(profileId: number) {
     const currentTags = profile.inbound_tags || [];
     const lines = ['Available inbounds', '-'.repeat(20)];
 
+    const globalInboundRemarks = getSettings().inbound_remarks || {};
     for (const ib of xrayInbounds) {
       const selected = currentTags.includes(ib.tag) ? '[x]' : '[ ]';
-      const inboundRemark = profile.inbound_remarks?.[ib.tag] || '-';
+      const inboundRemark = globalInboundRemarks[ib.tag] || '-';
       lines.push(`${selected} ${fitText(ib.tag, 12).padEnd(12, ' ')} (${ib.protocol}:${ib.port}) ${fitText(inboundRemark, 20)}`);
     }
     lines.push('');
@@ -938,7 +937,8 @@ async function manageInbounds(profileId: number) {
     lines.push('');
     lines.push('1. Add inbound by tag');
     lines.push('2. Remove inbound by tag');
-    lines.push('3. Set inbound remark');
+    lines.push('3. Add all inbounds');
+    lines.push('4. Remove all inbounds');
     lines.push('0. Back');
     renderPanel(`Inbounds | ${profile.username}`, lines);
     
@@ -974,16 +974,13 @@ async function manageInbounds(profileId: number) {
         console.log('Tag not in profile');
       }
     } else if (choice === '3') {
-      const tag = promptCentered('Inbound tag: ');
-      if (!tag) continue;
-      if (!xrayInbounds.find(ib => ib.tag === tag)) {
-        console.log('Tag not found in Xray config');
-      } else {
-        const current = profile.inbound_remarks?.[tag] || '';
-        const inboundRemark = promptCentered(`Remark for ${tag} (${current || 'empty'}): `);
-        setProfileInboundRemark(profileId, tag, inboundRemark);
-        console.log('✓ Inbound remark updated');
-      }
+      setProfileInboundTags(profileId, xrayInbounds.map(ib => ib.tag));
+      console.log('✓ All inbounds added');
+      reloadXray();
+    } else if (choice === '4') {
+      setProfileInboundTags(profileId, []);
+      console.log('✓ All inbounds removed');
+      reloadXray();
     } else {
       break;
     }
@@ -1112,22 +1109,25 @@ async function main() {
         if (username) {
           const serverAddr = promptCentered('Server address (empty = auto): ');
           const remark = promptCentered('Remark (display name): ');
-          const serverDesc = promptCentered('Server description (empty = none): ');
+          const addAllInbounds = promptCentered('Add all inbounds now? (y/n): ');
           const limitGb = Number(promptCentered('Traffic limit GB (0 = no limit): ') || '0');
           const expireDays = Number(promptCentered('Expiration period in days (0 = none): ') || '0');
           const profile = createProfile(
             username,
             serverAddr || undefined,
             remark || undefined,
-            serverDesc || undefined,
+            addAllInbounds.toLowerCase() === 'y',
             limitGb || 0,
             expireDays || 0
           );
           console.log(`✓ Profile created: ${profile.username}`);
-          
-          const add = promptCentered('Add inbound? (y/n): ');
-          if (add.toLowerCase() === 'y') {
-            await manageInbounds(profile.id);
+          if (addAllInbounds.toLowerCase() === 'y') {
+            reloadXray();
+          } else {
+            const add = promptCentered('Manage inbounds now? (y/n): ');
+            if (add.toLowerCase() === 'y') {
+              await manageInbounds(profile.id);
+            }
           }
         }
       } else if (sub === '2') {
@@ -1174,6 +1174,7 @@ async function main() {
           '4. Toggle Show Traffic Limit',
           '5. Toggle Show Expiration',
           '6. Edit Profile',
+          '7. Set Global Inbound Remark',
           '0. Back'
         ]);
 
@@ -1202,15 +1203,13 @@ async function main() {
           if (profile) {
             const newAddr = promptCentered(`Server address (${profile.server_address || 'auto'}): `);
             const newRemark = promptCentered(`Remark (${profile.remark || profile.username}): `);
-            const newServerDesc = promptCentered(`Server description (${profile.server_description || 'none'}): `);
             const newLimitGb = promptCentered(`Traffic limit GB (${profile.limit_gb || 0}): `);
             const newExpireDays = promptCentered(`Expiration days (${profile.expire_days || 0}): `);
-            if (newAddr !== '' || newRemark !== '' || newServerDesc !== '' || newLimitGb !== '' || newExpireDays !== '') {
+            if (newAddr !== '' || newRemark !== '' || newLimitGb !== '' || newExpireDays !== '') {
               updateProfileSettings(
                 parseInt(id),
                 newAddr || profile.server_address,
                 newRemark || profile.remark,
-                newServerDesc || profile.server_description,
                 newLimitGb === '' ? profile.limit_gb : Number(newLimitGb),
                 newExpireDays === '' ? profile.expire_days : Number(newExpireDays)
               );
@@ -1218,6 +1217,17 @@ async function main() {
             }
           } else {
             console.log('✗ Profile not found');
+          }
+        } else if (s === '7') {
+          const tag = promptCentered('Inbound tag: ');
+          const xrayInbounds = getXrayInbounds();
+          if (!tag || !xrayInbounds.find(ib => ib.tag === tag)) {
+            console.log('✗ Inbound tag not found');
+          } else {
+            const current = settings.inbound_remarks?.[tag] || '';
+            const value = promptCentered(`Remark for ${tag} (${current || 'empty'}): `);
+            setGlobalInboundRemark(tag, value);
+            console.log('✓ Global inbound remark updated');
           }
         } else {
           break;
