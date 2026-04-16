@@ -101,6 +101,7 @@ function loadDB(): Database {
     return {
       profiles: (raw.profiles || []).map((p: any) => ({
         ...p,
+        flow: p.flow || 'xtls-rprx-vision',
         limit_gb: Number(p.limit_gb ?? p.total_gb ?? 0) || 0,
         upload_bytes: Number(p.upload_bytes ?? 0) || 0,
         download_bytes: Number(p.download_bytes ?? 0) || 0,
@@ -234,7 +235,7 @@ function createProfile(
     uuid: crypto.randomUUID(),
     username,
     enable: 1,
-    flow: '',
+    flow: 'xtls-rprx-vision',
     limit_gb: Math.max(0, Number(limitGb || 0)),
     upload_bytes: 0,
     download_bytes: 0,
@@ -506,7 +507,7 @@ function buildXrayConfig() {
     
     for (const profile of db.profiles.filter(p => p.enable && p.inbound_tags?.includes(ib.tag))) {
       if (ib.protocol === 'vmess' || ib.protocol === 'vless') {
-        clients.push({ id: profile.uuid, email: profile.username, flow: profile.flow || '' });
+        clients.push({ id: profile.uuid, email: profile.username, flow: profile.flow || 'xtls-rprx-vision' });
       } else if (ib.protocol === 'trojan') {
         const pass = (ib.settings as any)?.clients?.[0]?.password || profile.uuid;
         clients.push({ password: pass, email: profile.username });

@@ -101,6 +101,7 @@ function loadDB(): Database {
     return {
       profiles: (raw.profiles || []).map((p: any) => ({
         ...p,
+        flow: p.flow || 'xtls-rprx-vision',
         limit_gb: Number(p.limit_gb ?? p.total_gb ?? 0) || 0,
         upload_bytes: Number(p.upload_bytes ?? 0) || 0,
         download_bytes: Number(p.download_bytes ?? 0) || 0,
@@ -619,7 +620,7 @@ app.post('/api/profiles', requireAuth, (req, res) => {
     uuid: crypto.randomUUID(),
     username,
     enable: 1,
-    flow: '',
+    flow: 'xtls-rprx-vision',
     limit_gb: Math.max(0, limit_gb),
     upload_bytes: 0,
     download_bytes: 0,
