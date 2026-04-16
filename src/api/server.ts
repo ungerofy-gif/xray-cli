@@ -79,6 +79,7 @@ interface XrayStreamSettings {
   security?: string;
   tlsSettings?: XrayTlsSettings;
   tcpSettings?: XrayTcpSettings;
+  rawSettings?: any;
   wsSettings?: any;
   xhttpSettings?: any;
   grpcSettings?: any;
@@ -91,10 +92,42 @@ interface XrayStreamSettings {
   alpn?: string | string[];
 }
 
+function normalizeStreamSettingsObject(raw: any): XrayStreamSettings {
+  const src = raw || {};
+  const dst: any = { ...src };
+  if (!dst.tlsSettings && src.tls_settings) dst.tlsSettings = src.tls_settings;
+  if (!dst.tcpSettings && src.tcp_settings) dst.tcpSettings = src.tcp_settings;
+  if (!dst.wsSettings && src.ws_settings) dst.wsSettings = src.ws_settings;
+  if (!dst.grpcSettings && src.grpc_settings) dst.grpcSettings = src.grpc_settings;
+  if (!dst.httpSettings && src.http_settings) dst.httpSettings = src.http_settings;
+  if (!dst.xhttpSettings && src.xhttp_settings) dst.xhttpSettings = src.xhttp_settings;
+  if (!dst.kcpSettings && src.kcp_settings) dst.kcpSettings = src.kcp_settings;
+  if (!dst.quicSettings && src.quic_settings) dst.quicSettings = src.quic_settings;
+  if (!dst.realitySettings && src.reality_settings) dst.realitySettings = src.reality_settings;
+  if (!dst.rawSettings && src.tcpSettings) dst.rawSettings = src.tcpSettings;
+  if (!dst.rawSettings && src.raw_settings) dst.rawSettings = src.raw_settings;
+  if (!dst.httpupgradeSettings && src.httpupgrade_settings) dst.httpupgradeSettings = src.httpupgrade_settings;
+  if (!dst.hysteriaSettings && src.hysteria_settings) dst.hysteriaSettings = src.hysteria_settings;
+  delete dst.tls_settings;
+  delete dst.tcp_settings;
+  delete dst.ws_settings;
+  delete dst.grpc_settings;
+  delete dst.http_settings;
+  delete dst.xhttp_settings;
+  delete dst.kcp_settings;
+  delete dst.quic_settings;
+  delete dst.reality_settings;
+  delete dst.raw_settings;
+  delete dst.httpupgrade_settings;
+  delete dst.hysteria_settings;
+  return dst as XrayStreamSettings;
+}
+
 function getInboundStreamSettings(ib: XrayInbound): XrayStreamSettings {
-  const streamSettings = (ib.stream_settings || ib.streamSettings || {}) as XrayStreamSettings;
+  const streamSettings = normalizeStreamSettingsObject(ib.streamSettings || ib.stream_settings || {});
   if (!streamSettings.tlsSettings && ib.tlsSettings) streamSettings.tlsSettings = ib.tlsSettings;
   if (!streamSettings.tcpSettings && ib.tcpSettings) streamSettings.tcpSettings = ib.tcpSettings;
+  if (!streamSettings.rawSettings && streamSettings.tcpSettings) streamSettings.rawSettings = streamSettings.tcpSettings as any;
   return streamSettings;
 }
 
@@ -196,7 +229,14 @@ function getXrayInbounds(): XrayInbound[] {
   try {
     if (!existsSync(XRAY_CONFIG_PATH)) return [];
     const config = JSON.parse(readFileSync(XRAY_CONFIG_PATH, 'utf8'));
-    return (config.inbounds || []).filter((ib: any) => ib.tag !== 'api');
+    return (config.inbounds || [])
+      .filter((ib: any) => ib.tag !== 'api')
+      .map((ib: any) => {
+        const streamSettings = normalizeStreamSettingsObject(ib.streamSettings || ib.stream_settings || {});
+        const next = { ...ib, streamSettings } as any;
+        delete next.stream_settings;
+        return next;
+      });
   } catch {
     return [];
   }
@@ -378,7 +418,7 @@ function applyCommonStreamParams(params: URLSearchParams, streamSettings: XraySt
     setIfPresent(params, 'serviceName', streamSettings.grpcSettings?.serviceName);
     setIfPresent(params, 'mode', streamSettings.grpcSettings?.mode);
     setIfPresent(params, 'authority', streamSettings.grpcSettings?.authority);
-  } else if (streamSettings.network === 'tcp') {
+  } else if (streamSettings.network === 'tcp' || streamSettings.network === 'raw') {
     setIfPresent(params, 'headerType', streamSettings.tcpSettings?.header?.type);
   } else if (streamSettings.network === 'kcp') {
     setIfPresent(params, 'headerType', streamSettings.kcpSettings?.header?.type);
@@ -469,8 +509,9 @@ function buildXrayConfig() {
       allocate: { strategy: 'always' }
     };
     
-    if (ib.stream_settings || ib.streamSettings) {
-      inbound.streamSettings = ib.stream_settings || ib.streamSettings;
+    const streamSettings = getInboundStreamSettings(ib);
+    if (Object.keys(streamSettings).length > 0) {
+      inbound.streamSettings = streamSettings;
     }
     
     const clients: any[] = [];
@@ -582,7 +623,7 @@ function generateSubscription(profile: Profile): string {
       } else if (streamSettings.network === 'grpc') {
         if (streamSettings.grpcSettings?.serviceName) vmess.path = streamSettings.grpcSettings.serviceName;
         if (streamSettings.grpcSettings?.authority) vmess.host = streamSettings.grpcSettings.authority;
-      } else if (streamSettings.network === 'tcp') {
+      } else if (streamSettings.network === 'tcp' || streamSettings.network === 'raw') {
         if (streamSettings.tcpSettings?.header?.type) vmess.type = streamSettings.tcpSettings.header.type;
       } else if (streamSettings.network === 'kcp') {
         if (streamSettings.kcpSettings?.header?.type) vmess.type = streamSettings.kcpSettings.header.type;
