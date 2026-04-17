@@ -564,10 +564,44 @@ function applyUserRuntimeState(profile: Profile, mode: ApplyMode = 'reconcile'):
   return { ok: true, message: 'runtime apply completed' };
 }
 
-function applyRuntimeForTags(profile: Profile, tags: string[], mode: ApplyMode): { ok: boolean; message: string } {
+function isRuntimeUnsupportedProtocol(protocol: string): boolean {
+  const normalized = normalizeText(protocol).toLowerCase();
+  return normalized === 'hysteria2' || normalized === 'hysteria';
+}
+
+function splitRuntimeTags(tags: string[]): { dynamicTags: string[]; restartRequiredTags: string[] } {
   const filtered = [...new Set((tags || []).map(normalizeText).filter(Boolean))];
-  if (filtered.length === 0) return { ok: true, message: 'runtime apply skipped: no changed inbounds' };
-  return applyUserRuntimeState({ ...profile, inbound_tags: filtered }, mode);
+  if (filtered.length === 0) return { dynamicTags: [], restartRequiredTags: [] };
+
+  const protocolByTag = new Map<string, string>();
+  for (const inbound of getXrayInbounds()) {
+    protocolByTag.set(inbound.tag, normalizeText(inbound.protocol));
+  }
+
+  const dynamicTags: string[] = [];
+  const restartRequiredTags: string[] = [];
+  for (const tag of filtered) {
+    const protocol = protocolByTag.get(tag) || '';
+    if (isRuntimeUnsupportedProtocol(protocol)) restartRequiredTags.push(tag);
+    else dynamicTags.push(tag);
+  }
+  return { dynamicTags, restartRequiredTags };
+}
+
+type RuntimeApplyResult = { ok: boolean; message: string; requiresRestart: boolean };
+
+function applyRuntimeForTags(profile: Profile, tags: string[], mode: ApplyMode): RuntimeApplyResult {
+  const split = splitRuntimeTags(tags);
+  let runtime = { ok: true, message: 'runtime apply skipped: no changed inbounds' };
+  if (split.dynamicTags.length > 0) {
+    runtime = applyUserRuntimeState({ ...profile, inbound_tags: split.dynamicTags }, mode);
+  }
+  if (split.restartRequiredTags.length === 0) {
+    return { ok: runtime.ok, message: runtime.message, requiresRestart: false };
+  }
+  const restartPart = `runtime apply for ${split.restartRequiredTags.join(', ')} requires Xray restart (hysteria protocol)`;
+  const message = runtime.message ? `${runtime.message}; ${restartPart}` : restartPart;
+  return { ok: runtime.ok, message, requiresRestart: true };
 }
 
 function generateShortToken(length = 10): string {
@@ -1432,9 +1466,11 @@ app.post('/api/profiles', requireAuth, (req, res) => {
   try {
     saveDB(db);
     saveConfigAndReload();
-    const runtime = applyUserRuntimeState(profile, 'add-only');
-    if (runtime.ok) setXrayApplyPending(false);
-    res.json({ ...profile, apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
+    const runtime = applyRuntimeForTags(profile, profile.inbound_tags || [], 'add-only');
+    const applyPending = runtime.requiresRestart || !runtime.ok;
+    if (!applyPending) setXrayApplyPending(false);
+    else setXrayApplyPending(true);
+    res.json({ ...profile, apply_pending: applyPending ? 1 : 0, apply_message: runtime.message });
   } catch (error: any) {
     const idx = db.profiles.findIndex(p => p.id === profile.id);
     if (idx >= 0) db.profiles.splice(idx, 1);
@@ -1456,9 +1492,13 @@ app.delete('/api/profiles/:id', requireAuth, (req, res) => {
   saveDB(db);
   saveConfigAndReload();
 
-  const runtime = removed ? applyUserRuntimeState({ ...removed, enable: 0, inbound_tags: removed.inbound_tags || [] }, 'remove-only') : { ok: false, message: 'removed profile not found' };
-  if (runtime.ok) setXrayApplyPending(false);
-  res.json({ status: 'ok', apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
+  const runtime = removed
+    ? applyRuntimeForTags({ ...removed, enable: 0, inbound_tags: removed.inbound_tags || [] }, removed.inbound_tags || [], 'remove-only')
+    : { ok: false, message: 'removed profile not found', requiresRestart: false };
+  const applyPending = runtime.requiresRestart || !runtime.ok;
+  if (!applyPending) setXrayApplyPending(false);
+  else setXrayApplyPending(true);
+  res.json({ status: 'ok', apply_pending: applyPending ? 1 : 0, apply_message: runtime.message });
 });
 
 app.get('/api/inbounds', requireAuth, (req, res) => {
@@ -1528,8 +1568,10 @@ app.post('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
     saveDB(db);
     saveConfigAndReload();
     const runtime = applyRuntimeForTags(profile, addedTags, 'add-only');
-    if (runtime.ok) setXrayApplyPending(false);
-    return res.json({ tags: profile.inbound_tags, apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
+    const applyPending = runtime.requiresRestart || !runtime.ok;
+    if (!applyPending) setXrayApplyPending(false);
+    else setXrayApplyPending(true);
+    return res.json({ tags: profile.inbound_tags, apply_pending: applyPending ? 1 : 0, apply_message: runtime.message });
   }
 
   const tag = normalizeText(req.body.tag);
@@ -1545,8 +1587,10 @@ app.post('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
     saveDB(db);
     saveConfigAndReload();
     const runtime = applyRuntimeForTags(profile, [tag], 'add-only');
-    if (runtime.ok) setXrayApplyPending(false);
-    return res.json({ tags: profile.inbound_tags, apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
+    const applyPending = runtime.requiresRestart || !runtime.ok;
+    if (!applyPending) setXrayApplyPending(false);
+    else setXrayApplyPending(true);
+    return res.json({ tags: profile.inbound_tags, apply_pending: applyPending ? 1 : 0, apply_message: runtime.message });
   }
   
   res.json({ tags: profile.inbound_tags, apply_pending: db.settings?.xray_apply_pending ? 1 : 0 });
@@ -1580,11 +1624,15 @@ app.put('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
   const runtimeAdd = applyRuntimeForTags(profile, addedTags, 'add-only');
   const runtimeRemove = applyRuntimeForTags(profile, removedTags, 'remove-only');
   const runtimeOK = runtimeAdd.ok && runtimeRemove.ok;
-  if (runtimeOK) setXrayApplyPending(false);
+  const requiresRestart = runtimeAdd.requiresRestart || runtimeRemove.requiresRestart;
+  const applyPending = !runtimeOK || requiresRestart;
+  if (!applyPending) setXrayApplyPending(false);
+  else setXrayApplyPending(true);
   const runtimeMessage = runtimeOK
     ? 'runtime apply completed'
     : [runtimeAdd.message, runtimeRemove.message].filter(Boolean).join('; ');
-  res.json({ tags: profile.inbound_tags, apply_pending: runtimeOK ? 0 : 1, apply_message: runtimeMessage });
+  const combinedMessage = requiresRestart && runtimeOK ? [runtimeMessage, runtimeAdd.message, runtimeRemove.message].filter(Boolean).join('; ') : runtimeMessage;
+  res.json({ tags: profile.inbound_tags, apply_pending: applyPending ? 1 : 0, apply_message: combinedMessage });
 });
 
 app.delete('/api/profiles/:id/inbounds/:tag', requireAuth, (req, res) => {
@@ -1599,9 +1647,11 @@ app.delete('/api/profiles/:id/inbounds/:tag', requireAuth, (req, res) => {
   profile.updated_at = new Date().toISOString();
   saveDB(db);
   saveConfigAndReload();
-  const runtime = hadTag ? applyRuntimeForTags(profile, [removedTag], 'remove-only') : { ok: true, message: 'runtime apply skipped: inbound not assigned' };
-  if (runtime.ok) setXrayApplyPending(false);
-  res.json({ tags: profile.inbound_tags, apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
+  const runtime = hadTag ? applyRuntimeForTags(profile, [removedTag], 'remove-only') : { ok: true, message: 'runtime apply skipped: inbound not assigned', requiresRestart: false };
+  const applyPending = runtime.requiresRestart || !runtime.ok;
+  if (!applyPending) setXrayApplyPending(false);
+  else setXrayApplyPending(true);
+  res.json({ tags: profile.inbound_tags, apply_pending: applyPending ? 1 : 0, apply_message: runtime.message });
 });
 
 app.post('/api/xray/install', requireAuth, (req, res) => {
@@ -1666,9 +1716,11 @@ app.patch('/api/profiles/:id/toggle', requireAuth, (req, res) => {
   saveDB(db);
   saveConfigAndReload();
 
-  const runtime = applyUserRuntimeState(profile, profile.enable ? 'add-only' : 'remove-only');
-  if (runtime.ok) setXrayApplyPending(false);
-  res.json({ status: 'ok', enable: profile.enable, apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
+  const runtime = applyRuntimeForTags(profile, profile.inbound_tags || [], profile.enable ? 'add-only' : 'remove-only');
+  const applyPending = runtime.requiresRestart || !runtime.ok;
+  if (!applyPending) setXrayApplyPending(false);
+  else setXrayApplyPending(true);
+  res.json({ status: 'ok', enable: profile.enable, apply_pending: applyPending ? 1 : 0, apply_message: runtime.message });
 });
 
 app.patch('/api/profiles/:id', requireAuth, (req, res) => {
@@ -1723,13 +1775,19 @@ app.patch('/api/profiles/:id', requireAuth, (req, res) => {
   }
   const runtimeOld = previous.enable === 1
     ? applyRuntimeForTags({ ...previous, enable: 0, inbound_tags: previous.inbound_tags || [] }, previous.inbound_tags || [], 'remove-only')
-    : { ok: true, message: 'runtime apply skipped: previously disabled' };
+    : { ok: true, message: 'runtime apply skipped: previously disabled', requiresRestart: false };
   const runtimeNew = profile.enable === 1
     ? applyRuntimeForTags(profile, profile.inbound_tags || [], 'add-only')
-    : { ok: true, message: 'runtime apply skipped: currently disabled' };
+    : { ok: true, message: 'runtime apply skipped: currently disabled', requiresRestart: false };
   const runtimeOK = runtimeOld.ok && runtimeNew.ok;
-  if (runtimeOK) setXrayApplyPending(false);
-  res.json({ ...profile, apply_pending: runtimeOK ? 0 : 1, apply_message: runtimeOK ? 'runtime apply completed' : 'runtime apply failed for one or more inbounds' });
+  const requiresRestart = runtimeOld.requiresRestart || runtimeNew.requiresRestart;
+  const applyPending = !runtimeOK || requiresRestart;
+  if (!applyPending) setXrayApplyPending(false);
+  else setXrayApplyPending(true);
+  const applyMessage = runtimeOK
+    ? (requiresRestart ? [runtimeOld.message, runtimeNew.message].filter(Boolean).join('; ') : 'runtime apply completed')
+    : 'runtime apply failed for one or more inbounds';
+  res.json({ ...profile, apply_pending: applyPending ? 1 : 0, apply_message: applyMessage });
 });
 
 app.get('/api/settings', requireAuth, (req, res) => {
