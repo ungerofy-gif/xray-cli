@@ -443,10 +443,14 @@ function addUserRuntimeToInbound(profile: Profile, inbound: XrayInbound): boolea
   const account = buildRuntimeAccount(profile, inbound);
   const payload = {
     tag: inbound.tag,
-    users: [account]
+    protocol: inbound.protocol,
+    settings: {
+      clients: [account]
+    }
   };
   const filePath = `/tmp/xray-adu-${Date.now()}-${Math.random().toString(36).slice(2)}.json`;
   writeFileSync(filePath, JSON.stringify(payload));
+  logDebug('xray.runtime.add.payload', { inbound: inbound.tag, protocol: inbound.protocol, filePath, payload });
   try {
     return runXrayAPICommand('adu', [`--server=${XRAY_API_ADDRESS}`, filePath]);
   } finally {
