@@ -513,8 +513,6 @@ function getProfile(id: number) {
 
 function createProfile(
   username: string,
-  serverAddress?: string,
-  remark?: string,
   addAllInbounds?: boolean,
   limitGb?: number,
   expireDays?: number
@@ -537,8 +535,8 @@ function createProfile(
     expires_at: expiresAt,
     sub_uuid: generateUniqueToken(db),
     inbound_tags: addAllInbounds ? getXrayInbounds().map(ib => ib.tag) : [],
-    server_address: serverAddress || '',
-    remark: remark || username,
+    server_address: '',
+    remark: username,
     created_at: now,
     updated_at: now
   };
@@ -1006,16 +1004,29 @@ async function dashboard() {
     `Profiles: ${profiles.length}`,
     `Inbounds: ${xrayInbounds.length}`,
     '',
-    'Recent Profiles',
+    'Profiles',
   ];
 
-  for (const p of profiles) {
-    const status = p.enable ? 'ON ' : 'OFF';
-    const tagCount = p.inbound_tags?.length || 0;
-    const exp = p.expires_at ? p.expires_at.slice(0, 10) : 'none';
-    lines.push(`${status}  ${p.username}  |  ${tagCount} inbounds  |  ${p.limit_gb} GB  |  exp ${exp}`);
+  if (profiles.length === 0) {
+    lines.push('No profiles found.');
+  } else {
+    profiles.forEach((p, idx) => {
+      const state = p.enable ? 'Enabled' : 'Disabled';
+      const usedBytes = Math.max(0, Number(p.upload_bytes || 0) + Number(p.download_bytes || 0));
+      const limitBytes = Math.max(0, Number(p.limit_gb || 0) * 1024 * 1024 * 1024);
+      const usageLabel = limitBytes > 0
+        ? `${formatBytes(usedBytes)} / ${formatBytes(limitBytes)}`
+        : `${formatBytes(usedBytes)} used`;
+      const usagePercent = limitBytes > 0 ? ` (${Math.min(100, Math.floor((usedBytes / limitBytes) * 100))}%)` : '';
+      lines.push(`${idx + 1}. ${p.username} (${state})`);
+      lines.push(`   Inbounds: ${(p.inbound_tags || []).length}  |  Limit: ${p.limit_gb} GB  |  Expire: ${p.expire_days || 0}d`);
+      lines.push(`   Traffic: ${usageLabel}${usagePercent}  |  Up ${formatBytes(p.upload_bytes || 0)}  Down ${formatBytes(p.download_bytes || 0)}`);
+      lines.push('');
+    });
+    if (lines[lines.length - 1] === '') {
+      lines.pop();
+    }
   }
-  if (profiles.length === 0) lines.push('No profiles yet.');
 
   renderPanel('Dashboard', lines);
   promptCentered('Press Enter to continue...');
@@ -1247,15 +1258,11 @@ async function main() {
       if (sub === '1') {
         const username = promptCentered('Username: ');
         if (username) {
-          const serverAddr = promptCentered('Server address (empty = auto): ');
-          const remark = promptCentered('Remark (display name): ');
           const addAllInbounds = promptCentered('Add all inbounds now? (y/n): ');
           const limitGb = Number(promptCentered('Traffic limit GB (0 = no limit): ') || '0');
           const expireDays = Number(promptCentered('Expiration period in days (0 = none): ') || '0');
           const profile = createProfile(
             username,
-            serverAddr || undefined,
-            remark || undefined,
             addAllInbounds.toLowerCase() === 'y',
             limitGb || 0,
             expireDays || 0
