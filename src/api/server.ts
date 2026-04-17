@@ -583,9 +583,6 @@ function syncProfileUsageFromStats(db: Database, stats: Record<string, number>):
 }
 
 function buildXrayConfig() {
-  const db = loadDB();
-  const settingsRoot = db.settings || ({} as Settings);
-  const xrayInbounds = getXrayInbounds();
   let existing: any = {};
   try {
     if (existsSync(XRAY_CONFIG_PATH)) {
@@ -602,50 +599,11 @@ function buildXrayConfig() {
       levels: { '0': { statsUserUplink: true, statsUserDownlink: true } },
       system: { statsInboundUplink: true, statsInboundDownlink: true, statsOutboundUplink: true, statsOutboundDownlink: true }
     },
-    inbounds: [] as any[],
     outbounds: (Array.isArray(existing.outbounds) && existing.outbounds.length > 0) ? existing.outbounds : [
       { tag: 'direct', protocol: 'freedom', settings: {} },
       { tag: 'blocked', protocol: 'blackhole', settings: {} }
     ]
   };
-  
-  for (const ib of xrayInbounds) {
-    const inbound: any = {
-      tag: ib.tag,
-      port: resolveInboundPort(ib, settingsRoot),
-      listen: ib.listen || '0.0.0.0',
-      protocol: ib.protocol,
-      settings: normalizeInboundSettings(ib.settings),
-      allocate: { strategy: 'always' }
-    };
-    
-    const streamSettings = getInboundStreamSettings(ib);
-    if (Object.keys(streamSettings).length > 0) {
-      inbound.streamSettings = streamSettings;
-    }
-    
-    const clients: any[] = [];
-    
-    for (const profile of db.profiles.filter(p => p.enable && p.inbound_tags?.includes(ib.tag))) {
-      if (ib.protocol === 'vmess') {
-        clients.push({ id: profile.uuid, email: profile.username });
-      } else if (ib.protocol === 'vless') {
-        clients.push({ id: profile.uuid, email: profile.username, flow: profile.flow || 'xtls-rprx-vision' });
-      } else if (ib.protocol === 'trojan') {
-        const pass = (ib.settings as any)?.clients?.[0]?.password || profile.uuid;
-        clients.push({ password: pass, email: profile.username });
-      } else if (ib.protocol === 'shadowsocks') {
-        const ssSettings = (ib.settings as any)?.clients?.[0] || {};
-        clients.push({ method: ssSettings.method || 'aes-256-gcm', password: ssSettings.password || profile.uuid, email: profile.username });
-      } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
-        clients.push({ auth: profile.uuid, email: profile.username });
-      }
-    }
-    
-    if (clients.length > 0) inbound.settings = { ...inbound.settings, clients };
-    
-    config.inbounds.push(inbound);
-  }
   
   if (config.routing && Array.isArray(config.routing.rules)) {
     config.routing = {
