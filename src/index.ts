@@ -43,6 +43,7 @@ interface Settings {
   announcement: string;
   inbound_link_remarks: Record<string, string>;
   inbound_remarks: Record<string, string>;
+  global_inbound_port: number;
   profile_update_interval: number;
   show_traffic_limit: number;
   show_expiration: number;
@@ -138,6 +139,12 @@ function normalizeInboundSettings(settings: any): any {
   const next = { ...(settings || {}) };
   if ('clients' in next) delete next.clients;
   return next;
+}
+
+function resolveInboundPort(ib: XrayInbound, settings: Settings): number {
+  const port = Number(settings?.global_inbound_port || 0);
+  if (Number.isFinite(port) && port >= 1 && port <= 65535) return Math.floor(port);
+  return Number(ib.port);
 }
 
 function setIfPresent(params: URLSearchParams, key: string, value: unknown) {
@@ -301,6 +308,7 @@ function loadDB(): Database {
         announcement: raw.settings?.announcement || raw.settings?.server_description || '',
         inbound_link_remarks: raw.settings?.inbound_link_remarks || {},
         inbound_remarks: raw.settings?.inbound_remarks || {},
+        global_inbound_port: Number(raw.settings?.global_inbound_port ?? 0) || 0,
         profile_update_interval: Number(raw.settings?.profile_update_interval ?? 2) || 2,
         show_traffic_limit: raw.settings?.show_traffic_limit === undefined ? 1 : (raw.settings?.show_traffic_limit ? 1 : 0),
         show_expiration: raw.settings?.show_expiration === undefined ? 1 : (raw.settings?.show_expiration ? 1 : 0)
@@ -316,6 +324,7 @@ function loadDB(): Database {
       announcement: '',
       inbound_link_remarks: {},
       inbound_remarks: {},
+      global_inbound_port: 0,
       profile_update_interval: 2,
       show_traffic_limit: 1,
       show_expiration: 1
@@ -594,6 +603,7 @@ function getSettings(): Settings {
     announcement: '',
     inbound_link_remarks: {},
     inbound_remarks: {},
+    global_inbound_port: 0,
     profile_update_interval: 2,
     show_traffic_limit: 1,
     show_expiration: 1
@@ -767,6 +777,7 @@ function validateXrayConfig(): { valid: boolean; errors: string[] } {
 
 function buildXrayConfig() {
   const db = loadDB();
+  const settingsRoot = db.settings || getSettings();
   const xrayInbounds = getXrayInbounds();
   let existing: any = {};
   try {
@@ -794,7 +805,7 @@ function buildXrayConfig() {
   for (const ib of xrayInbounds) {
     const inbound: any = {
       tag: ib.tag,
-      port: ib.port,
+      port: resolveInboundPort(ib, settingsRoot),
       listen: ib.listen || '0.0.0.0',
       protocol: ib.protocol,
       settings: normalizeInboundSettings(ib.settings),
@@ -885,6 +896,7 @@ function generateSubscription(profile: Profile): string {
     if (!p.inbound_tags?.includes(ib.tag)) continue;
     const streamSettings = getInboundStreamSettings(ib);
     const inboundSettings = (ib.settings as any) || {};
+    const effectivePort = resolveInboundPort(ib, settings);
     const inboundServerDescription = settings.inbound_remarks?.[ib.tag];
     const inboundRemark = settings.inbound_link_remarks?.[ib.tag];
     const title = `${titlePrefix}${inboundRemark || ib.tag}`;
@@ -897,7 +909,7 @@ function generateSubscription(profile: Profile): string {
         v: '2',
         ps: title,
         add: serverAddress,
-        port: ib.port,
+        port: effectivePort,
         id: p.uuid,
         aid: 0,
         net: streamSettings.network || 'tcp',
@@ -940,15 +952,15 @@ function generateSubscription(profile: Profile): string {
       applyCommonStreamParams(params, streamSettings);
       params.set('flow', profile.flow || 'xtls-rprx-vision');
       params.set('encryption', 'none');
-      links.push(`vless://${p.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remarkFragment}`);
+      links.push(`vless://${p.uuid}@${serverAddress}:${effectivePort}?${params.toString()}#${remarkFragment}`);
     } else if (ib.protocol === 'trojan') {
       const params = new URLSearchParams();
       const pass = inboundSettings?.clients?.[0]?.password || p.uuid;
       applyCommonStreamParams(params, streamSettings);
-      links.push(`trojan://${pass}@${serverAddress}:${ib.port}?${params.toString()}#${remarkFragment}`);
+      links.push(`trojan://${pass}@${serverAddress}:${effectivePort}?${params.toString()}#${remarkFragment}`);
     } else if (ib.protocol === 'shadowsocks') {
       const ssSettings = inboundSettings?.clients?.[0] || {};
-      const ss = `${ssSettings.method || 'aes-256-gcm'}:${ssSettings.password || p.uuid}@${serverAddress}:${ib.port}`;
+      const ss = `${ssSettings.method || 'aes-256-gcm'}:${ssSettings.password || p.uuid}@${serverAddress}:${effectivePort}`;
       links.push(`ss://${Buffer.from(ss).toString('base64')}#${remarkFragment}`);
     } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
       const params = new URLSearchParams();
@@ -967,7 +979,7 @@ function generateSubscription(profile: Profile): string {
       }
       if (hySettings.upMbps) params.set('upmbps', String(hySettings.upMbps));
       if (hySettings.downMbps) params.set('downmbps', String(hySettings.downMbps));
-      links.push(`hy2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remarkFragment}`);
+      links.push(`hy2://${auth}@${serverAddress}:${effectivePort}?${params.toString()}#${remarkFragment}`);
     }
   }
   
@@ -1043,6 +1055,7 @@ async function manageInbounds(profileId: number) {
     const profile = getProfile(profileId);
     if (!profile) return;
     const xrayInbounds = getXrayInbounds();
+    const settingsRoot = getSettings();
     const currentTags = profile.inbound_tags || [];
     const lines = ['Available Inbounds', ''];
 
@@ -1050,7 +1063,7 @@ async function manageInbounds(profileId: number) {
     for (const ib of xrayInbounds) {
       const selected = currentTags.includes(ib.tag) ? '[x]' : '[ ]';
       const inboundRemark = globalInboundRemarks[ib.tag] || '-';
-      lines.push(`${selected} ${ib.tag}  |  ${ib.protocol}:${ib.port}  |  ${inboundRemark}`);
+      lines.push(`${selected} ${ib.tag}  |  ${ib.protocol}:${resolveInboundPort(ib, settingsRoot)}  |  ${inboundRemark}`);
     }
     lines.push('');
     lines.push(`Current tags: ${currentTags.length > 0 ? currentTags.join(', ') : 'none'}`);
@@ -1322,6 +1335,7 @@ async function main() {
           `API Port: 2053`,
           `Subscription Title: ${settings.subscription_title || '(default)'}`,
           `Subscription Domain: ${settings.subscription_domain || '(not set)'}`,
+          `Global Inbound Port: ${settings.global_inbound_port || '(original per inbound)'}`,
           `Announcement: ${settings.announcement || '(none)'}`,
           `Auto Update Interval (h): ${settings.profile_update_interval || 2}`,
           `Show Traffic Limit: ${settings.show_traffic_limit ? 'ON' : 'OFF'}`,
@@ -1331,10 +1345,11 @@ async function main() {
           '2. Set Subscription Domain (domain:port)',
           '3. Set Announcement (global)',
           '4. Set Auto Update Interval (hours)',
-          '5. Toggle Show Traffic Limit',
-          '6. Toggle Show Expiration',
-          '7. Set Global Inbound ServerDescription',
-          '8. Set Global Inbound Remark',
+          '5. Set Global Inbound Port (1-65535, 0 to disable)',
+          '6. Toggle Show Traffic Limit',
+          '7. Toggle Show Expiration',
+          '8. Set Global Inbound ServerDescription',
+          '9. Set Global Inbound Remark',
           '0. Back'
         ]);
 
@@ -1356,12 +1371,18 @@ async function main() {
           updateSettings({ profile_update_interval: Math.max(1, Math.floor(hours || 2)) });
           showMessage('Auto update interval saved');
         } else if (s === '5') {
+          const rawPort = Number(promptCentered(`Global inbound port (${settings.global_inbound_port || 0}): `) || '0');
+          const normalizedPort = Math.max(0, Math.floor(Number.isFinite(rawPort) ? rawPort : 0));
+          updateSettings({ global_inbound_port: normalizedPort > 65535 ? 65535 : normalizedPort });
+          showMessage('Global inbound port updated');
+          reloadXray();
+        } else if (s === '6') {
           updateSettings({ show_traffic_limit: settings.show_traffic_limit ? 0 : 1 });
           showMessage('Traffic-limit display updated');
-        } else if (s === '6') {
+        } else if (s === '7') {
           updateSettings({ show_expiration: settings.show_expiration ? 0 : 1 });
           showMessage('Expiration display updated');
-        } else if (s === '7') {
+        } else if (s === '8') {
           const tag = promptCentered('Inbound tag: ');
           const xrayInbounds = getXrayInbounds();
           if (!tag || !xrayInbounds.find(ib => ib.tag === tag)) {
@@ -1372,7 +1393,7 @@ async function main() {
             setGlobalInboundRemark(tag, value);
             showMessage('Per-inbound serverDescription updated');
           }
-        } else if (s === '8') {
+        } else if (s === '9') {
           const tag = promptCentered('Inbound tag: ');
           const xrayInbounds = getXrayInbounds();
           if (!tag || !xrayInbounds.find(ib => ib.tag === tag)) {

@@ -35,6 +35,7 @@ interface Settings {
   announcement: string;
   inbound_link_remarks: Record<string, string>;
   inbound_remarks: Record<string, string>;
+  global_inbound_port: number;
   profile_update_interval: number;
   show_traffic_limit: number;
   show_expiration: number;
@@ -158,6 +159,7 @@ function loadDB(): Database {
         announcement: raw.settings?.announcement || raw.settings?.server_description || '',
         inbound_link_remarks: raw.settings?.inbound_link_remarks || {},
         inbound_remarks: raw.settings?.inbound_remarks || {},
+        global_inbound_port: Number(raw.settings?.global_inbound_port ?? 0) || 0,
         profile_update_interval: Number(raw.settings?.profile_update_interval ?? 2) || 2,
         show_traffic_limit: raw.settings?.show_traffic_limit === undefined ? 1 : (raw.settings?.show_traffic_limit ? 1 : 0),
         show_expiration: raw.settings?.show_expiration === undefined ? 1 : (raw.settings?.show_expiration ? 1 : 0)
@@ -173,6 +175,7 @@ function loadDB(): Database {
       announcement: '',
       inbound_link_remarks: {},
       inbound_remarks: {},
+      global_inbound_port: 0,
       profile_update_interval: 2,
       show_traffic_limit: 1,
       show_expiration: 1
@@ -425,6 +428,12 @@ function normalizeInboundSettings(settings: any): any {
   return next;
 }
 
+function resolveInboundPort(ib: XrayInbound, settings: Settings): number {
+  const port = Number(settings?.global_inbound_port || 0);
+  if (Number.isFinite(port) && port >= 1 && port <= 65535) return Math.floor(port);
+  return Number(ib.port);
+}
+
 function setIfPresent(params: URLSearchParams, key: string, value: unknown) {
   if (value === undefined || value === null) return;
   const s = String(value).trim();
@@ -575,6 +584,7 @@ function syncProfileUsageFromStats(db: Database, stats: Record<string, number>):
 
 function buildXrayConfig() {
   const db = loadDB();
+  const settingsRoot = db.settings || ({} as Settings);
   const xrayInbounds = getXrayInbounds();
   let existing: any = {};
   try {
@@ -602,7 +612,7 @@ function buildXrayConfig() {
   for (const ib of xrayInbounds) {
     const inbound: any = {
       tag: ib.tag,
-      port: ib.port,
+      port: resolveInboundPort(ib, settingsRoot),
       listen: ib.listen || '0.0.0.0',
       protocol: ib.protocol,
       settings: normalizeInboundSettings(ib.settings),
@@ -722,6 +732,7 @@ function buildSubscriptionPayload(profile: Profile, db: Database): SubscriptionP
     
     const streamSettings = getInboundStreamSettings(ib);
     const settings = ib.settings as any || {};
+    const effectivePort = resolveInboundPort(ib, settingsRoot);
     
     const params = new URLSearchParams();
     const inboundServerDescription = settingsRoot.inbound_remarks?.[ib.tag];
@@ -734,7 +745,7 @@ function buildSubscriptionPayload(profile: Profile, db: Database): SubscriptionP
         v: '2',
         ps: title,
         add: serverAddress,
-        port: ib.port,
+        port: effectivePort,
         id: p.uuid,
         aid: 0,
         net: streamSettings.network || 'tcp',
@@ -787,7 +798,7 @@ function buildSubscriptionPayload(profile: Profile, db: Database): SubscriptionP
       const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc || '';
       const remark = buildRemarkFragment(title, serverDescription);
-      links.push(`vless://${p.uuid}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
+      links.push(`vless://${p.uuid}@${serverAddress}:${effectivePort}?${params.toString()}#${remark}`);
       
     } else if (ib.protocol === 'trojan') {
       const password = settings.clients?.[0]?.password || p.uuid;
@@ -796,7 +807,7 @@ function buildSubscriptionPayload(profile: Profile, db: Database): SubscriptionP
       const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc || '';
       const remark = buildRemarkFragment(title, serverDescription);
-      links.push(`trojan://${password}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
+      links.push(`trojan://${password}@${serverAddress}:${effectivePort}?${params.toString()}#${remark}`);
       
     } else if (ib.protocol === 'shadowsocks') {
       const ssSettings = settings.clients?.[0] || {};
@@ -809,7 +820,7 @@ function buildSubscriptionPayload(profile: Profile, db: Database): SubscriptionP
       const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc || '';
       const remark = buildRemarkFragment(title, serverDescription);
-      links.push(`ss://${ssEncoded}@${serverAddress}:${ib.port}#${remark}`);
+      links.push(`ss://${ssEncoded}@${serverAddress}:${effectivePort}#${remark}`);
       
     } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
       const auth = p.uuid;
@@ -831,7 +842,7 @@ function buildSubscriptionPayload(profile: Profile, db: Database): SubscriptionP
       const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc || '';
       const remark = buildRemarkFragment(title, serverDescription);
-      links.push(`hy2://${auth}@${serverAddress}:${ib.port}?${params.toString()}#${remark}`);
+      links.push(`hy2://${auth}@${serverAddress}:${effectivePort}?${params.toString()}#${remark}`);
       
     } else if (ib.protocol === 'wireguard') {
       const wgSettings = settings || {};
@@ -839,7 +850,7 @@ function buildSubscriptionPayload(profile: Profile, db: Database): SubscriptionP
       const peer = wgSettings.peers?.[0] || {};
       const publicKey = peer.publicKey || '';
       const allowedIPs = peer.allowedIPs?.join(',') || '0.0.0.0/0';
-      const endpoint = peer.endpoint || `${serverAddress}:${ib.port}`;
+      const endpoint = peer.endpoint || `${serverAddress}:${effectivePort}`;
       
       const effectiveDesc = inboundServerDescription || '';
       serverDescription = effectiveDesc || '';
@@ -848,7 +859,7 @@ function buildSubscriptionPayload(profile: Profile, db: Database): SubscriptionP
       paramsWg.set('publicKey', publicKey);
       paramsWg.set('allowedIPs', allowedIPs);
       paramsWg.set('endpoint', endpoint);
-      links.push(`wireguard://${privateKey}@${serverAddress}:${ib.port}?${paramsWg.toString()}#${remark}`);
+      links.push(`wireguard://${privateKey}@${serverAddress}:${effectivePort}?${paramsWg.toString()}#${remark}`);
     }
   }
   
@@ -1269,6 +1280,8 @@ app.patch('/api/settings', requireAuth, (req, res) => {
     req.body.inbound_link_remarks === undefined ? undefined : (typeof req.body.inbound_link_remarks === 'object' && req.body.inbound_link_remarks ? req.body.inbound_link_remarks : {});
   const profile_update_interval =
     req.body.profile_update_interval === undefined ? undefined : Number(req.body.profile_update_interval);
+  const global_inbound_port =
+    req.body.global_inbound_port === undefined ? undefined : Number(req.body.global_inbound_port);
   const show_traffic_limit =
     req.body.show_traffic_limit === undefined ? undefined : (req.body.show_traffic_limit ? 1 : 0);
   const show_expiration =
@@ -1281,6 +1294,10 @@ app.patch('/api/settings', requireAuth, (req, res) => {
   if (inbound_link_remarks !== undefined) db.settings.inbound_link_remarks = inbound_link_remarks as Record<string, string>;
   if (profile_update_interval !== undefined && !Number.isNaN(profile_update_interval)) {
     db.settings.profile_update_interval = Math.max(1, Math.floor(profile_update_interval));
+  }
+  if (global_inbound_port !== undefined && !Number.isNaN(global_inbound_port)) {
+    const normalizedPort = Math.max(0, Math.floor(global_inbound_port));
+    db.settings.global_inbound_port = normalizedPort > 65535 ? 65535 : normalizedPort;
   }
   if (show_traffic_limit !== undefined) db.settings.show_traffic_limit = show_traffic_limit;
   if (show_expiration !== undefined) db.settings.show_expiration = show_expiration;
