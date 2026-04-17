@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/mem"
@@ -24,7 +23,7 @@ func GetMetrics(ctx context.Context) (Metrics, error) {
 		return Metrics{}, fmt.Errorf("cpu cores: %w", err)
 	}
 
-	usage, err := cpu.PercentWithContext(ctx, time.Second, false)
+	usage, err := cpu.PercentWithContext(ctx, 0, false)
 	if err != nil {
 		return Metrics{}, fmt.Errorf("cpu usage: %w", err)
 	}

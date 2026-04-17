@@ -25,11 +25,12 @@ type AddUserConversation struct {
 }
 
 type EditInboundsSession struct {
-	UserID    int
-	Username  string
-	Original  map[string]bool
-	Working   map[string]bool
-	UpdatedAt time.Time
+	UserID     int
+	Username   string
+	ReturnPage int
+	Original   map[string]bool
+	Working    map[string]bool
+	UpdatedAt  time.Time
 }
 
 type Store struct {

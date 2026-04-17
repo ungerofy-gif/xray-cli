@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/example/xray-cli-ts/go-bot/internal/config"
@@ -51,7 +52,7 @@ func (h *Handler) registerHandlers() {
 
 func (h *Handler) onAnyUpdate(ctx context.Context, _ *botapi.Bot, upd *tg.Update) {
 	if upd.Message != nil && upd.Message.Text != "" {
-		h.handleConversationMessage(ctx, upd.Message)
+		go h.handleConversationMessage(context.Background(), upd.Message)
 	}
 }
 
@@ -89,7 +90,7 @@ func mainKeyboard() *tg.InlineKeyboardMarkup {
 }
 
 func menuText() string {
-	return "🏠 <b>Главное меню</b>\nВыберите действие:"
+	return "🏠 <b>Главное меню</b>\n\nВыберите действие:"
 }
 
 func (h *Handler) onCallback(ctx context.Context, _ *botapi.Bot, upd *tg.Update) {
@@ -104,11 +105,18 @@ func (h *Handler) onCallback(ctx context.Context, _ *botapi.Bot, upd *tg.Update)
 
 	parts := strings.Split(cq.Data, ":")
 	action := parts[0]
+	h.answerCallback(ctx, cq.ID, "")
 
+	go h.processCallback(context.Background(), cq, action, parts)
+}
+
+func (h *Handler) processCallback(ctx context.Context, cq *tg.CallbackQuery, action string, parts []string) {
 	switch action {
 	case "sys":
+		h.answerCallback(context.Background(), cq.ID, "Обновляю статус…")
 		h.showSystemState(ctx, cq)
 	case "xr":
+		h.answerCallback(context.Background(), cq.ID, "Применяю действие…")
 		h.restartXray(ctx, cq)
 	case "us", "pg":
 		h.showUsersPage(ctx, cq, parseInt(parts, 1, 1))
@@ -123,12 +131,12 @@ func (h *Handler) onCallback(ctx context.Context, _ *botapi.Bot, upd *tg.Update)
 	case "ud":
 		id := parseInt(parts, 1, 0)
 		if id > 0 {
-			h.showUserDetails(ctx, cq, id)
+			h.showUserDetails(ctx, cq, id, parseInt(parts, 2, 1))
 		}
 	case "ut":
 		id := parseInt(parts, 1, 0)
 		if id > 0 {
-			h.toggleUser(ctx, cq, id)
+			h.toggleUser(ctx, cq, id, parseInt(parts, 2, 1))
 		}
 	case "ux":
 		id := parseInt(parts, 1, 0)
@@ -138,7 +146,7 @@ func (h *Handler) onCallback(ctx context.Context, _ *botapi.Bot, upd *tg.Update)
 	case "ue":
 		id := parseInt(parts, 1, 0)
 		if id > 0 {
-			h.startEditUser(ctx, cq, id)
+			h.startEditUser(ctx, cq, id, parseInt(parts, 2, 1))
 		}
 	case "uig":
 		if len(parts) >= 2 {
@@ -153,7 +161,6 @@ func (h *Handler) onCallback(ctx context.Context, _ *botapi.Bot, upd *tg.Update)
 	case "menu":
 		h.showMainMenu(ctx, cq)
 	}
-	h.answerCallback(ctx, cq.ID, "")
 }
 
 func (h *Handler) showMainMenu(ctx context.Context, cq *tg.CallbackQuery) {
@@ -172,52 +179,60 @@ func (h *Handler) showSystemState(ctx context.Context, cq *tg.CallbackQuery) {
 		return
 	}
 
-	metricsCtx, cancel := context.WithTimeout(ctx, h.cfg.MetricsTimeout)
-	defer cancel()
-	m, err := system.GetMetrics(metricsCtx)
-	if err != nil {
+	h.editTextWithKeyboard(ctx, chatID, msgID, "⏳ Обновляю состояние системы…", mainKeyboard())
+
+	var (
+		m               system.Metrics
+		serverAnalytics *model.ServerAnalytics
+		metricsErr      error
+		analyticsErr    error
+	)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		metricsCtx, cancel := context.WithTimeout(context.Background(), h.cfg.MetricsTimeout)
+		defer cancel()
+		m, metricsErr = system.GetMetrics(metricsCtx)
+	}()
+	go func() {
+		defer wg.Done()
+		apiCtx, apiCancel := context.WithTimeout(context.Background(), h.cfg.RequestTimeout)
+		defer apiCancel()
+		serverAnalytics, analyticsErr = h.svc.GetServerAnalytics(apiCtx)
+	}()
+	wg.Wait()
+	if metricsErr != nil {
 		h.editText(ctx, chatID, msgID, "Не удалось получить метрики системы")
 		return
 	}
-
-	apiCtx, apiCancel := context.WithTimeout(ctx, h.cfg.RequestTimeout)
-	defer apiCancel()
-	serverAnalytics, err := h.svc.GetServerAnalytics(apiCtx)
-	if err != nil {
+	if analyticsErr != nil {
 		h.editText(ctx, chatID, msgID, "Не удалось загрузить аналитику")
 		return
 	}
 
 	totalUsageGB := float64(serverAnalytics.TotalTrafficBytes) / 1024 / 1024 / 1024
-	text := fmt.Sprintf("🖥 <b>Состояние системы</b>\n\n• Ядер: <b>%d</b>\n• CPU: <b>%.1f%%</b>\n• RAM: <b>%d MB / %d MB</b>\n• Общее количество пользователей: <b>%d</b>\n• Общий трафик сервера: <b>%.2f GB</b>", m.Cores, m.CPUPercent, m.RAMUsedMB, m.RAMTotalMB, serverAnalytics.UsersCount, totalUsageGB)
+	text := fmt.Sprintf("🖥 <b>Состояние системы</b>\n\n🧠 Ядер: <b>%d</b>\n⚙️ CPU: <b>%.1f%%</b>\n💾 RAM: <b>%d MB / %d MB</b>\n👥 Общее количество пользователей: <b>%d</b>\n📡 Общий трафик сервера: <b>%.2f GB</b>", m.Cores, m.CPUPercent, m.RAMUsedMB, m.RAMTotalMB, serverAnalytics.UsersCount, totalUsageGB)
 	h.editHTMLWithKeyboard(ctx, chatID, msgID, text, mainKeyboard())
 }
 
 func (h *Handler) restartXray(ctx context.Context, cq *tg.CallbackQuery) {
-	chatID, _, ok := callbackMessageMeta(cq)
+	chatID, msgID, ok := callbackMessageMeta(cq)
 	if !ok {
 		h.answerCallback(ctx, cq.ID, "Сообщение недоступно")
 		return
 	}
+	h.editTextWithKeyboard(ctx, chatID, msgID, "⏳ Выполняю операцию с Xray…", mainKeyboard())
 
 	apiCtx, cancel := context.WithTimeout(ctx, h.cfg.RequestTimeout)
 	defer cancel()
-	if err := h.svc.ReloadXray(apiCtx); err == nil {
-		h.sendHTMLWithKeyboard(chatID, "✅ Изменения Xray применены", mainKeyboard())
+	if err := h.svc.RestartXray(apiCtx); err == nil {
+		h.sendHTMLWithKeyboard(chatID, "✅ Успешная перезагрузка Xray", mainKeyboard())
 		return
 	}
-
-	cmdCtx, restartCancel := context.WithTimeout(ctx, h.cfg.CommandTimeout)
-	defer restartCancel()
-	details, err := system.RestartXray(cmdCtx)
-	if err == nil {
-		h.sendHTMLWithKeyboard(chatID, "⚠️ Reload недоступен, выполнена перезагрузка Xray", mainKeyboard())
-		return
-	}
-
 	text := "❌ Перезагрузка провалилась"
-	if details != "" {
-		text += "\n\n<code>" + html.EscapeString(sanitizeCode(details)) + "</code>"
+	if err := h.svc.ReloadXray(apiCtx); err == nil {
+		text = "⚠️ Перезагрузка не выполнена, но reload конфигурации применен"
 	}
 	h.sendHTMLWithKeyboard(chatID, text, mainKeyboard())
 }
@@ -243,7 +258,7 @@ func (h *Handler) showUsersPage(ctx context.Context, cq *tg.CallbackQuery, page 
 func usersKeyboard(items []model.Profile, current, total int) *tg.InlineKeyboardMarkup {
 	rows := make([][]tg.InlineKeyboardButton, 0, len(items)+3)
 	for _, p := range items {
-		rows = append(rows, []tg.InlineKeyboardButton{{Text: p.Username, CallbackData: "ud:" + strconv.Itoa(p.ID)}})
+		rows = append(rows, []tg.InlineKeyboardButton{{Text: p.Username, CallbackData: "ud:" + strconv.Itoa(p.ID) + ":" + strconv.Itoa(current)}})
 	}
 	rows = append(rows, []tg.InlineKeyboardButton{{Text: "Добавить пользователя", CallbackData: "ad"}})
 	if total > 1 {
@@ -262,7 +277,7 @@ func usersKeyboard(items []model.Profile, current, total int) *tg.InlineKeyboard
 	return &tg.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
-func (h *Handler) showUserDetails(ctx context.Context, cq *tg.CallbackQuery, id int) {
+func (h *Handler) showUserDetails(ctx context.Context, cq *tg.CallbackQuery, id int, page int) {
 	chatID, msgID, ok := callbackMessageMeta(cq)
 	if !ok {
 		h.answerCallback(ctx, cq.ID, "Сообщение недоступно")
@@ -270,12 +285,6 @@ func (h *Handler) showUserDetails(ctx context.Context, cq *tg.CallbackQuery, id 
 	}
 	apiCtx, cancel := context.WithTimeout(ctx, h.cfg.RequestTimeout)
 	defer cancel()
-	profiles, err := h.svc.ListProfiles(apiCtx)
-	if err != nil {
-		h.editText(ctx, chatID, msgID, "Ошибка загрузки пользователя")
-		return
-	}
-	page := findPageByID(profiles, id, h.cfg.UsersPerPage)
 	text, err := h.svc.GetUserDetails(apiCtx, id)
 	if err != nil {
 		h.editText(ctx, chatID, msgID, "Ошибка загрузки пользователя")
@@ -288,9 +297,9 @@ func userDetailsKeyboard(id, page int) *tg.InlineKeyboardMarkup {
 	pagePart := strconv.Itoa(page)
 	return &tg.InlineKeyboardMarkup{InlineKeyboard: [][]tg.InlineKeyboardButton{
 		{{Text: "Назад", CallbackData: "bk:" + strconv.Itoa(page)}},
-		{{Text: "Включить / Выключить", CallbackData: "ut:" + strconv.Itoa(id)}},
+		{{Text: "Включить / Выключить", CallbackData: "ut:" + strconv.Itoa(id) + ":" + pagePart}},
 		{{Text: "Удалить", CallbackData: "ux:" + strconv.Itoa(id) + ":" + pagePart}},
-		{{Text: "Изменить", CallbackData: "ue:" + strconv.Itoa(id)}},
+		{{Text: "Изменить", CallbackData: "ue:" + strconv.Itoa(id) + ":" + pagePart}},
 	}}
 }
 
@@ -306,14 +315,14 @@ func findPageByID(items []model.Profile, id, pageSize int) int {
 	return 1
 }
 
-func (h *Handler) toggleUser(ctx context.Context, cq *tg.CallbackQuery, id int) {
+func (h *Handler) toggleUser(ctx context.Context, cq *tg.CallbackQuery, id int, page int) {
 	apiCtx, cancel := context.WithTimeout(ctx, h.cfg.RequestTimeout)
 	defer cancel()
 	if err := h.svc.ToggleUser(apiCtx, id); err != nil {
 		h.answerCallback(ctx, cq.ID, "Ошибка переключения")
 		return
 	}
-	h.showUserDetails(ctx, cq, id)
+	h.showUserDetails(ctx, cq, id, page)
 }
 
 func (h *Handler) deleteUser(ctx context.Context, cq *tg.CallbackQuery, id int, page int) {
@@ -329,7 +338,7 @@ func (h *Handler) deleteUser(ctx context.Context, cq *tg.CallbackQuery, id int, 
 	h.showUsersPage(ctx, cq, page)
 }
 
-func (h *Handler) startEditUser(ctx context.Context, cq *tg.CallbackQuery, id int) {
+func (h *Handler) startEditUser(ctx context.Context, cq *tg.CallbackQuery, id int, page int) {
 	chatID, msgID, ok := callbackMessageMeta(cq)
 	if !ok {
 		h.answerCallback(ctx, cq.ID, "Сообщение недоступно")
@@ -354,6 +363,7 @@ func (h *Handler) startEditUser(ctx context.Context, cq *tg.CallbackQuery, id in
 		h.editText(ctx, chatID, msgID, "Ошибка загрузки")
 		return
 	}
+	session.ReturnPage = page
 	h.store.SetEdit(cq.From.ID, session)
 	h.renderEditUser(ctx, chatID, msgID, session, inbounds)
 }
@@ -398,7 +408,7 @@ func (h *Handler) applyEditUser(ctx context.Context, cq *tg.CallbackQuery) {
 		return
 	}
 	h.store.DeleteEdit(cq.From.ID)
-	h.showUserDetails(ctx, cq, session.UserID)
+	h.showUserDetails(ctx, cq, session.UserID, session.ReturnPage)
 }
 
 func (h *Handler) cancelEditUser(ctx context.Context, cq *tg.CallbackQuery) {
@@ -411,7 +421,7 @@ func (h *Handler) cancelEditUser(ctx context.Context, cq *tg.CallbackQuery) {
 		}
 		return
 	}
-	h.showUserDetails(ctx, cq, session.UserID)
+	h.showUserDetails(ctx, cq, session.UserID, session.ReturnPage)
 }
 
 func (h *Handler) renderEditUser(ctx context.Context, chatID int64, msgID int, session state.EditInboundsSession, inbounds []model.Inbound) {

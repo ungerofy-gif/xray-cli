@@ -355,7 +355,9 @@ function saveConfigAndReload(): void {
   const config = buildXrayConfig();
   mkdirSync(dirname(XRAY_CONFIG_PATH), { recursive: true });
   writeFileSync(XRAY_CONFIG_PATH, JSON.stringify(config, null, 2));
-  reloadXray();
+  if (!reloadXray()) {
+    throw new Error('Failed to reload xray with systemctl reload xray');
+  }
 }
 
 function generateShortToken(length = 10): string {
@@ -458,7 +460,7 @@ function reloadXray(): boolean {
     execSync('systemctl reload xray');
     return true;
   } catch {
-    return restartXray();
+    return false;
   }
 }
 
@@ -1306,6 +1308,30 @@ app.post('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
   res.json(profile.inbound_tags);
 });
 
+app.put('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
+  const db = loadDB();
+  const profile = getProfileById(db, req.params.id);
+  if (!profile) return res.status(404).json({ detail: 'Profile not found' });
+
+  const xrayInbounds = getXrayInbounds();
+  const allowedTags = new Set(xrayInbounds.map(ib => ib.tag));
+  const input: unknown[] = Array.isArray(req.body?.tags) ? req.body.tags : [];
+  const normalized = input
+    .map((v: unknown) => normalizeText(v))
+    .filter((tag: string) => tag.length > 0);
+  const nextTags: string[] = [...new Set(normalized)];
+  if (nextTags.some(tag => !allowedTags.has(tag))) {
+    return res.status(400).json({ detail: 'One or more inbound tags were not found in Xray config' });
+  }
+
+  profile.inbound_tags = nextTags;
+  profile.updated_at = new Date().toISOString();
+  saveDB(db);
+  saveConfigAndReload();
+
+  res.json(profile.inbound_tags);
+});
+
 app.delete('/api/profiles/:id/inbounds/:tag', requireAuth, (req, res) => {
   const db = loadDB();
   const profile = getProfileById(db, req.params.id);
@@ -1350,6 +1376,14 @@ app.post('/api/xray/start', requireAuth, (req, res) => {
     res.json({ status: 'ok' });
   } else {
     res.status(500).json({ detail: 'Failed to start xray' });
+  }
+});
+
+app.post('/api/xray/restart', requireAuth, (req, res) => {
+  if (restartXray()) {
+    res.json({ status: 'ok' });
+  } else {
+    res.status(500).json({ detail: 'Failed to restart xray' });
   }
 });
 

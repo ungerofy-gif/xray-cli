@@ -94,6 +94,11 @@ func (c *Client) DeleteProfileInbound(ctx context.Context, id int, tag string) e
 	return c.doJSON(ctx, http.MethodDelete, "/api/profiles/"+strconv.Itoa(id)+"/inbounds/"+escaped, nil, nil)
 }
 
+func (c *Client) SetProfileInbounds(ctx context.Context, id int, tags []string) error {
+	body := map[string][]string{"tags": tags}
+	return c.doJSON(ctx, http.MethodPut, "/api/profiles/"+strconv.Itoa(id)+"/inbounds", body, nil)
+}
+
 func (c *Client) GetSubscription(ctx context.Context, id int) (*models.SubscriptionResponse, error) {
 	var out models.SubscriptionResponse
 	if err := c.doJSON(ctx, http.MethodGet, "/api/profiles/"+strconv.Itoa(id)+"/subscription", nil, &out); err != nil {
@@ -104,6 +109,10 @@ func (c *Client) GetSubscription(ctx context.Context, id int) (*models.Subscript
 
 func (c *Client) Reload(ctx context.Context) error {
 	return c.doJSON(ctx, http.MethodPost, "/reload", nil, nil)
+}
+
+func (c *Client) RestartXray(ctx context.Context) error {
+	return c.doJSON(ctx, http.MethodPost, "/api/xray/restart", nil, nil)
 }
 
 func (c *Client) GetAnalytics(ctx context.Context) (*models.AnalyticsResponse, error) {

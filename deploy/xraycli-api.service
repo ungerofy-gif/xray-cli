@@ -1,0 +1,21 @@
+[Unit]
+Description=Xray CLI API (Bun)
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/usr/local/xray-cli
+EnvironmentFile=-/etc/default/xraycli-api
+ExecStart=/usr/local/bin/xraycli-api
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

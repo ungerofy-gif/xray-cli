@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/example/xray-cli-ts/go-bot/internal/api"
@@ -64,10 +65,7 @@ func (s *Service) GetUserDetails(ctx context.Context, id int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sub, err := s.api.GetSubscription(ctx, id)
-	if err != nil {
-		return "", err
-	}
+	var sub *models.SubscriptionResponse
 	status := "Выключен"
 	if profile.Enable == 1 {
 		status = "Включен"
@@ -93,7 +91,23 @@ func (s *Service) GetUserDetails(ctx context.Context, id int) (string, error) {
 	b.WriteString(fmt.Sprintf("Лимит по трафику: <b>%.2f GB</b>\n", profile.LimitGB))
 	b.WriteString(fmt.Sprintf("Использовано трафика: <b>%.2f GB</b>\n", usageGB))
 	b.WriteString(fmt.Sprintf("Истекает: <b>%s</b>\n", html.EscapeString(expires)))
-	analyticsData, analyticsErr := s.api.GetProfileAnalytics(ctx, id)
+	var analyticsData *models.ProfileAnalyticsResponse
+	var analyticsErr error
+	var subErr error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		analyticsData, analyticsErr = s.api.GetProfileAnalytics(ctx, id)
+	}()
+	go func() {
+		defer wg.Done()
+		sub, subErr = s.api.GetSubscription(ctx, id)
+	}()
+	wg.Wait()
+	if subErr != nil {
+		return "", subErr
+	}
 	b.WriteString("\n🗂 <b>Аналитика пользователя</b>\n")
 	if analyticsErr != nil {
 		b.WriteString("1 день: недостаточно данных\n")
@@ -191,23 +205,14 @@ func ToggleInbound(session state.EditInboundsSession, tag string) state.EditInbo
 }
 
 func (s *Service) ApplyEditInbounds(ctx context.Context, session state.EditInboundsSession) error {
-	for tag := range session.Working {
-		orig := session.Original[tag]
-		now := session.Working[tag]
-		if orig == now {
-			continue
-		}
-		if now {
-			if err := s.api.AddProfileInbound(ctx, session.UserID, tag); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := s.api.DeleteProfileInbound(ctx, session.UserID, tag); err != nil {
-			return err
+	tags := make([]string, 0, len(session.Working))
+	for tag, enabled := range session.Working {
+		if enabled {
+			tags = append(tags, tag)
 		}
 	}
-	return nil
+	sort.Strings(tags)
+	return s.api.SetProfileInbounds(ctx, session.UserID, tags)
 }
 
 func BuildEditTitle(username string) string {
@@ -226,6 +231,10 @@ func (s *Service) CreateUser(ctx context.Context, c state.AddUserConversation) (
 
 func (s *Service) ReloadXray(ctx context.Context) error {
 	return s.api.Reload(ctx)
+}
+
+func (s *Service) RestartXray(ctx context.Context) error {
+	return s.api.RestartXray(ctx)
 }
 
 func (s *Service) GetServerAnalytics(ctx context.Context) (*models.ServerAnalytics, error) {
