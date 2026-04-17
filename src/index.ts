@@ -776,6 +776,8 @@ function validateXrayConfig(): { valid: boolean; errors: string[] } {
 }
 
 function buildXrayConfig() {
+  const settingsRoot = getSettings();
+  const xrayInbounds = getXrayInbounds();
   let existing: any = {};
   try {
     if (existsSync(XRAY_CONFIG_PATH)) {
@@ -797,6 +799,18 @@ function buildXrayConfig() {
       { tag: 'blocked', protocol: 'blackhole', settings: {} }
     ]
   };
+
+  if (Array.isArray(config.inbounds)) {
+    const inboundMap = new Map<string, XrayInbound>();
+    for (const ib of xrayInbounds) inboundMap.set(ib.tag, ib);
+    for (const inbound of config.inbounds) {
+      if (!inbound || typeof inbound.tag !== 'string') continue;
+      const source = inboundMap.get(inbound.tag);
+      if (!source) continue;
+      inbound.port = resolveInboundPort(source, settingsRoot);
+      inbound.listen = source.listen || inbound.listen || '0.0.0.0';
+    }
+  }
   
   if (config.routing && Array.isArray(config.routing.rules)) {
     config.routing = {
