@@ -776,7 +776,7 @@ function validateXrayConfig(): { valid: boolean; errors: string[] } {
 }
 
 function buildXrayConfig() {
-  const settingsRoot = getSettings();
+  const db = loadDB();
   const xrayInbounds = getXrayInbounds();
   let existing: any = {};
   try {
@@ -794,22 +794,53 @@ function buildXrayConfig() {
       levels: { '0': { statsUserUplink: true, statsUserDownlink: true } },
       system: { statsInboundUplink: true, statsInboundDownlink: true, statsOutboundUplink: true, statsOutboundDownlink: true }
     },
+    inbounds: [] as any[],
     outbounds: (Array.isArray(existing.outbounds) && existing.outbounds.length > 0) ? existing.outbounds : [
       { tag: 'direct', protocol: 'freedom', settings: {} },
       { tag: 'blocked', protocol: 'blackhole', settings: {} }
     ]
   };
 
-  if (Array.isArray(config.inbounds)) {
-    const inboundMap = new Map<string, XrayInbound>();
-    for (const ib of xrayInbounds) inboundMap.set(ib.tag, ib);
-    for (const inbound of config.inbounds) {
-      if (!inbound || typeof inbound.tag !== 'string') continue;
-      const source = inboundMap.get(inbound.tag);
-      if (!source) continue;
-      inbound.port = resolveInboundPort(source, settingsRoot);
-      inbound.listen = source.listen || inbound.listen || '0.0.0.0';
+  const existingInboundByTag = new Map<string, any>();
+  if (Array.isArray(existing.inbounds)) {
+    for (const inbound of existing.inbounds) {
+      if (inbound && typeof inbound.tag === 'string') existingInboundByTag.set(inbound.tag, inbound);
     }
+  }
+
+  for (const ib of xrayInbounds) {
+    const previous = existingInboundByTag.get(ib.tag);
+    const inbound: any = {
+      tag: ib.tag,
+      // Keep address/port from existing config; never overwrite these fields.
+      port: previous?.port ?? ib.port,
+      listen: previous?.listen ?? ib.listen ?? '0.0.0.0',
+      protocol: ib.protocol,
+      settings: normalizeInboundSettings(ib.settings),
+      allocate: { strategy: 'always' }
+    };
+
+    const streamSettings = getInboundStreamSettings(ib);
+    if (Object.keys(streamSettings).length > 0) inbound.streamSettings = streamSettings;
+
+    const clients: any[] = [];
+    for (const profile of db.profiles.filter(p => p.enable && p.inbound_tags?.includes(ib.tag))) {
+      if (ib.protocol === 'vmess') {
+        clients.push({ id: profile.uuid, email: profile.username });
+      } else if (ib.protocol === 'vless') {
+        clients.push({ id: profile.uuid, email: profile.username, flow: profile.flow || 'xtls-rprx-vision' });
+      } else if (ib.protocol === 'trojan') {
+        const pass = (ib.settings as any)?.clients?.[0]?.password || profile.uuid;
+        clients.push({ password: pass, email: profile.username });
+      } else if (ib.protocol === 'shadowsocks') {
+        const ssSettings = (ib.settings as any)?.clients?.[0] || {};
+        clients.push({ method: ssSettings.method || 'aes-256-gcm', password: ssSettings.password || profile.uuid, email: profile.username });
+      } else if (ib.protocol === 'hysteria2' || ib.protocol === 'hysteria') {
+        clients.push({ auth: profile.uuid, email: profile.username });
+      }
+    }
+    if (clients.length > 0) inbound.settings = { ...inbound.settings, clients };
+    config.inbounds.push(inbound);
   }
   
   if (config.routing && Array.isArray(config.routing.rules)) {
