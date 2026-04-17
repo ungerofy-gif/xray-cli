@@ -9,6 +9,14 @@ import crypto from 'crypto';
 const DB_DIR = `${homedir()}/.config/xray-cli`;
 mkdirSync(DB_DIR, { recursive: true });
 const DB_PATH = `${DB_DIR}/xray-cli.json`;
+const UI = {
+  reset: '\x1b[0m',
+  dim: '\x1b[2m',
+  border: '\x1b[38;5;244m',
+  title: '\x1b[38;5;81m',
+  ok: '\x1b[38;5;78m',
+  err: '\x1b[38;5;203m'
+};
 
 interface Profile {
   id: number;
@@ -405,16 +413,19 @@ function panelWidth(): number {
   return Math.max(MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, columns - 4));
 }
 
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
 function centerLine(text: string): string {
   const columns = process.stdout.columns || 80;
-  const pad = Math.max(0, Math.floor((columns - Array.from(text).length) / 2));
+  const pad = Math.max(0, Math.floor((columns - Array.from(stripAnsi(text)).length) / 2));
   return ' '.repeat(pad) + text;
 }
 
 function renderPanel(title: string, lines: string[] = []) {
   const width = panelWidth();
-  const inner = width - 4;
-  const top = `+${'-'.repeat(width - 2)}+`;
+  const inner = width - 2;
   const fullTitle = title === 'XRAY CLI' ? title : `XRAY CLI | ${title}`;
 
   const normalized: string[] = [];
@@ -423,14 +434,12 @@ function renderPanel(title: string, lines: string[] = []) {
   }
 
   console.log('');
-  console.log(centerLine(top));
-  console.log(centerLine(`| ${fitText(fullTitle, inner).padEnd(inner, ' ')} |`));
-  console.log(centerLine(`| ${'-'.repeat(inner)} |`));
-  console.log(centerLine(top));
+  console.log(centerLine(`${UI.title}${fitText(fullTitle, inner).padEnd(inner, ' ')}${UI.reset}`));
+  console.log(centerLine(`${UI.border}${UI.dim}${'─'.repeat(inner)}${UI.reset}`));
   for (const line of normalized) {
-    console.log(centerLine(`| ${fitText(line, inner).padEnd(inner, ' ')} |`));
+    console.log(centerLine(`${fitText(line, inner).padEnd(inner, ' ')}`));
   }
-  console.log(centerLine(top));
+  console.log(centerLine(`${UI.border}${UI.dim}${'─'.repeat(inner)}${UI.reset}`));
   console.log('');
 }
 
@@ -439,8 +448,20 @@ function promptCentered(question: string): string {
 }
 
 function showMessage(message: string, ok = true) {
-  const prefix = ok ? '[OK]' : '[ERR]';
+  const prefix = ok ? `${UI.ok}[OK]${UI.reset}` : `${UI.err}[ERR]${UI.reset}`;
   renderPanel('Status', [`${prefix} ${message}`]);
+}
+
+function formatBytes(value: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = Math.max(0, Number(value) || 0);
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  const precision = unit <= 1 ? 0 : 1;
+  return `${size.toFixed(precision)} ${units[unit]}`;
 }
 
 function getProfileByUsername(username: string): Profile | undefined {
@@ -994,9 +1015,16 @@ async function listProfiles() {
   } else {
     profiles.forEach((p, idx) => {
       const state = p.enable ? 'Enabled' : 'Disabled';
+      const usedBytes = Math.max(0, Number(p.upload_bytes || 0) + Number(p.download_bytes || 0));
+      const limitBytes = Math.max(0, Number(p.limit_gb || 0) * 1024 * 1024 * 1024);
+      const usageLabel = limitBytes > 0
+        ? `${formatBytes(usedBytes)} / ${formatBytes(limitBytes)}`
+        : `${formatBytes(usedBytes)} used`;
+      const usagePercent = limitBytes > 0 ? ` (${Math.min(100, Math.floor((usedBytes / limitBytes) * 100))}%)` : '';
       lines.push(`${idx + 1}. ${p.username} (${state})`);
       lines.push(`   Token: ${(p.sub_uuid || '').slice(0, 10)}  |  Limit: ${p.limit_gb} GB  |  Expire: ${p.expire_days || 0}d`);
       lines.push(`   Inbounds: ${(p.inbound_tags || []).length}`);
+      lines.push(`   Traffic: ${usageLabel}${usagePercent}  |  Up ${formatBytes(p.upload_bytes || 0)}  Down ${formatBytes(p.download_bytes || 0)}`);
       lines.push('');
     });
     if (lines[lines.length - 1] === '') {
@@ -1194,6 +1222,7 @@ async function main() {
         '3. Toggle by Username',
         '4. Manage Inbounds',
         '5. View Subscription',
+        '6. Edit Profile',
         '0. Back'
       ]);
       
@@ -1261,6 +1290,27 @@ async function main() {
         } else {
           await subscriptionUrl(profile.id);
         }
+      } else if (sub === '6') {
+        const username = promptCentered('Username: ');
+        const profile = getProfileByUsername(username);
+        if (profile) {
+          const newAddr = promptCentered(`Server address (${profile.server_address || 'auto'}): `);
+          const newRemark = promptCentered(`Remark (${profile.remark || profile.username}): `);
+          const newLimitGb = promptCentered(`Traffic limit GB (${profile.limit_gb || 0}): `);
+          const newExpireDays = promptCentered(`Expiration days (${profile.expire_days || 0}): `);
+          if (newAddr !== '' || newRemark !== '' || newLimitGb !== '' || newExpireDays !== '') {
+            updateProfileSettings(
+              profile.id,
+              newAddr || profile.server_address,
+              newRemark || profile.remark,
+              newLimitGb === '' ? profile.limit_gb : Number(newLimitGb),
+              newExpireDays === '' ? profile.expire_days : Number(newExpireDays)
+            );
+            showMessage(`Profile updated: ${profile.username}`);
+          }
+        } else {
+          showMessage('Username not found', false);
+        }
       }
     } else if (choice === '3') {
       await xrayManagement();
@@ -1270,8 +1320,6 @@ async function main() {
         const settings = getSettings();
         renderPanel('Settings', [
           `API Port: 2053`,
-          `Config: ${XRAY_CONFIG_PATH}`,
-          `Database: ${DB_PATH}`,
           `Subscription Title: ${settings.subscription_title || '(default)'}`,
           `Subscription Domain: ${settings.subscription_domain || '(not set)'}`,
           `Announcement: ${settings.announcement || '(none)'}`,
@@ -1285,9 +1333,8 @@ async function main() {
           '4. Set Auto Update Interval (hours)',
           '5. Toggle Show Traffic Limit',
           '6. Toggle Show Expiration',
-          '7. Edit Profile',
-          '8. Set Global Inbound ServerDescription',
-          '9. Set Global Inbound Remark',
+          '7. Set Global Inbound ServerDescription',
+          '8. Set Global Inbound Remark',
           '0. Back'
         ]);
 
@@ -1315,27 +1362,6 @@ async function main() {
           updateSettings({ show_expiration: settings.show_expiration ? 0 : 1 });
           showMessage('Expiration display updated');
         } else if (s === '7') {
-          const username = promptCentered('Username: ');
-          const profile = getProfileByUsername(username);
-          if (profile) {
-            const newAddr = promptCentered(`Server address (${profile.server_address || 'auto'}): `);
-            const newRemark = promptCentered(`Remark (${profile.remark || profile.username}): `);
-            const newLimitGb = promptCentered(`Traffic limit GB (${profile.limit_gb || 0}): `);
-            const newExpireDays = promptCentered(`Expiration days (${profile.expire_days || 0}): `);
-            if (newAddr !== '' || newRemark !== '' || newLimitGb !== '' || newExpireDays !== '') {
-              updateProfileSettings(
-                profile.id,
-                newAddr || profile.server_address,
-                newRemark || profile.remark,
-                newLimitGb === '' ? profile.limit_gb : Number(newLimitGb),
-                newExpireDays === '' ? profile.expire_days : Number(newExpireDays)
-              );
-              showMessage(`Profile updated: ${profile.username}`);
-            }
-          } else {
-            showMessage('Username not found', false);
-          }
-        } else if (s === '8') {
           const tag = promptCentered('Inbound tag: ');
           const xrayInbounds = getXrayInbounds();
           if (!tag || !xrayInbounds.find(ib => ib.tag === tag)) {
@@ -1346,7 +1372,7 @@ async function main() {
             setGlobalInboundRemark(tag, value);
             showMessage('Per-inbound serverDescription updated');
           }
-        } else if (s === '9') {
+        } else if (s === '8') {
           const tag = promptCentered('Inbound tag: ');
           const xrayInbounds = getXrayInbounds();
           if (!tag || !xrayInbounds.find(ib => ib.tag === tag)) {
