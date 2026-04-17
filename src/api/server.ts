@@ -890,21 +890,6 @@ function buildXrayConfig() {
     if (clients.length > 0) inbound.settings = { ...inbound.settings, clients };
     config.inbounds.push(inbound);
   }
-
-  if (!Array.isArray(config.inbounds)) config.inbounds = [];
-  config.inbounds = config.inbounds.filter((ib: any) => ib?.tag !== 'api-inbound');
-  config.inbounds.push({
-    tag: 'api-inbound',
-    listen: '127.0.0.1',
-    port: Number(String(XRAY_API_ADDRESS).split(':')[1] || 8080),
-    protocol: 'dokodemo-door',
-    settings: { address: '127.0.0.1' }
-  });
-
-  const existingRules = Array.isArray(config.routing?.rules) ? config.routing.rules : [];
-  const filteredRules = existingRules.filter((rule: any) => !(Array.isArray(rule?.inboundTag) && rule.inboundTag.includes('api-inbound')));
-  filteredRules.unshift({ type: 'field', inboundTag: ['api-inbound'], outboundTag: 'api' });
-  config.routing = { ...(config.routing || {}), rules: filteredRules };
   
   return config;
 }
