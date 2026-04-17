@@ -457,9 +457,10 @@ function addUserRuntimeToInbound(profile: Profile, inbound: XrayInbound): boolea
 }
 
 function removeUserRuntimeFromInbound(profile: Profile, inboundTag: string): boolean {
-  const email = runtimeUserEmail(profile);
-  logDebug('xray.runtime.remove.request', { inbound: inboundTag, email });
-  return runXrayAPICommand('rmu', [`--server=${XRAY_API_ADDRESS}`, email]);
+  const email = runtimeUserEmail(profile).replace(/'/g, "\\'");
+  const tag = inboundTag.replace(/'/g, "\\'");
+  logDebug('xray.runtime.remove.request', { inbound: inboundTag, email: runtimeUserEmail(profile) });
+  return runXrayAPICommand('rmu', [`--server=${XRAY_API_ADDRESS}`, `--tag='${tag}'`, `'${email}'`]);
 }
 
 function applyUserRuntimeState(profile: Profile): { ok: boolean; message: string } {
