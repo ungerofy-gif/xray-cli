@@ -189,7 +189,7 @@ const app = express();
 app.use(express.json({ limit: '256kb' }));
 
 const XRAY_CONFIG_PATH = process.env.XRAY_CONFIG_PATH || '/usr/local/etc/xray/config.json';
-const API_PORT = Number(process.env.API_PORT) || 8080;
+const API_PORT = Number(process.env.API_PORT) || 2053;
 const API_HOST = process.env.API_HOST || '127.0.0.1';
 const API_KEY = process.env.API_KEY || '';
 const XRAY_API_ADDRESS = process.env.XRAY_API_ADDRESS || '127.0.0.1:8080';

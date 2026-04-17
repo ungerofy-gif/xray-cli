@@ -12,12 +12,12 @@ bun install
 
 ```bash
 bun run start      # CLI/TUI
-bun run api        # API server (default 127.0.0.1:8080)
+bun run api        # CLI API server (default 127.0.0.1:2053)
 ```
 
 ## Config Note
 
-Generated Xray config keeps API only at top level:
+Generated Xray config keeps Xray core API only at top level:
 
 ```json
 "api": {"tag":"api","listen":"127.0.0.1:8080","services":["StatsService"]}

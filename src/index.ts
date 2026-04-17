@@ -460,7 +460,7 @@ function buildSubscriptionUrls(profile: Profile): Record<string, string> {
   const settings = getSettings();
   const customDomain = normalizeSubscriptionDomain(settings.subscription_domain || '');
   const host = process.env.API_HOST || '127.0.0.1';
-  const port = Number(process.env.API_PORT) || 8080;
+  const port = Number(process.env.API_PORT) || 2053;
   const base = customDomain ? `https://${customDomain}/${profile.sub_uuid}` : `http://${host}:${port}/${profile.sub_uuid}`;
   return {
     default: base,
@@ -1269,7 +1269,7 @@ async function main() {
         clear();
         const settings = getSettings();
         renderPanel('Settings', [
-          `API Port: 8080`,
+          `API Port: 2053`,
           `Config: ${XRAY_CONFIG_PATH}`,
           `Database: ${DB_PATH}`,
           `Subscription Title: ${settings.subscription_title || '(default)'}`,
