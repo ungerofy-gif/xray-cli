@@ -87,7 +87,7 @@ func mainKeyboard() *tg.InlineKeyboardMarkup {
 }
 
 func (h *Handler) onCallback(ctx context.Context, _ *botapi.Bot, upd *tg.Update) {
-	if upd.CallbackQuery == nil || upd.CallbackQuery.From == nil || upd.CallbackQuery.Message == nil {
+	if upd.CallbackQuery == nil {
 		return
 	}
 	cq := upd.CallbackQuery
@@ -143,43 +143,59 @@ func (h *Handler) onCallback(ctx context.Context, _ *botapi.Bot, upd *tg.Update)
 }
 
 func (h *Handler) showSystemState(ctx context.Context, cq *tg.CallbackQuery) {
+	chatID, msgID, ok := callbackMessageMeta(cq)
+	if !ok {
+		h.answerCallback(ctx, cq.ID, "Сообщение недоступно")
+		return
+	}
+
 	metricsCtx, cancel := context.WithTimeout(ctx, h.cfg.MetricsTimeout)
 	defer cancel()
 	m, err := system.GetMetrics(metricsCtx)
 	if err != nil {
-		h.editText(ctx, cq.Message.Chat.ID, cq.Message.ID, "Не удалось получить метрики системы")
+		h.editText(ctx, chatID, msgID, "Не удалось получить метрики системы")
 		return
 	}
 	text := fmt.Sprintf("• Ядер: `%d`\n• CPU: `%.1f%%`\n• RAM: `%d MB / %d MB`", m.Cores, m.CPUPercent, m.RAMUsedMB, m.RAMTotalMB)
-	h.editTextWithKeyboard(ctx, cq.Message.Chat.ID, cq.Message.ID, text, mainKeyboard(), tg.ParseModeMarkdown)
+	h.editTextWithKeyboard(ctx, chatID, msgID, text, mainKeyboard(), tg.ParseModeMarkdown)
 }
 
 func (h *Handler) restartXray(ctx context.Context, cq *tg.CallbackQuery) {
+	chatID, _, ok := callbackMessageMeta(cq)
+	if !ok {
+		h.answerCallback(ctx, cq.ID, "Сообщение недоступно")
+		return
+	}
 	cmdCtx, cancel := context.WithTimeout(ctx, h.cfg.CommandTimeout)
 	defer cancel()
 	details, err := system.RestartXray(cmdCtx)
 	if err == nil {
-		_, _ = h.bot.SendMessage(ctx, &botapi.SendMessageParams{ChatID: cq.Message.Chat.ID, Text: "Успешная перезагрузка"})
+		_, _ = h.bot.SendMessage(ctx, &botapi.SendMessageParams{ChatID: chatID, Text: "Успешная перезагрузка"})
 		return
 	}
 	text := "Перезагрузка провалилась"
 	if details != "" {
 		text += "\n\n```\n" + sanitizeCode(details) + "\n```"
 	}
-	_, _ = h.bot.SendMessage(ctx, &botapi.SendMessageParams{ChatID: cq.Message.Chat.ID, Text: text, ParseMode: tg.ParseModeMarkdown})
+	_, _ = h.bot.SendMessage(ctx, &botapi.SendMessageParams{ChatID: chatID, Text: text, ParseMode: tg.ParseModeMarkdown})
 }
 
 func (h *Handler) showUsersPage(ctx context.Context, cq *tg.CallbackQuery, page int) {
+	chatID, msgID, ok := callbackMessageMeta(cq)
+	if !ok {
+		h.answerCallback(ctx, cq.ID, "Сообщение недоступно")
+		return
+	}
 	apiCtx, cancel := context.WithTimeout(ctx, h.cfg.RequestTimeout)
 	defer cancel()
 	profiles, err := h.svc.ListProfiles(apiCtx)
 	if err != nil {
-		h.editText(ctx, cq.Message.Chat.ID, cq.Message.ID, "Ошибка загрузки пользователей")
+		h.editText(ctx, chatID, msgID, "Ошибка загрузки пользователей")
 		return
 	}
 	items, current, total := service.PaginateProfiles(profiles, page, h.cfg.UsersPerPage)
 	text := fmt.Sprintf("Пользователи: (Страница %d/%d)", current, total)
-	h.editTextWithKeyboard(ctx, cq.Message.Chat.ID, cq.Message.ID, text, usersKeyboard(items, current, total))
+	h.editTextWithKeyboard(ctx, chatID, msgID, text, usersKeyboard(items, current, total))
 }
 
 func usersKeyboard(items []model.Profile, current, total int) *tg.InlineKeyboardMarkup {
@@ -204,20 +220,25 @@ func usersKeyboard(items []model.Profile, current, total int) *tg.InlineKeyboard
 }
 
 func (h *Handler) showUserDetails(ctx context.Context, cq *tg.CallbackQuery, id int) {
+	chatID, msgID, ok := callbackMessageMeta(cq)
+	if !ok {
+		h.answerCallback(ctx, cq.ID, "Сообщение недоступно")
+		return
+	}
 	apiCtx, cancel := context.WithTimeout(ctx, h.cfg.RequestTimeout)
 	defer cancel()
 	profiles, err := h.svc.ListProfiles(apiCtx)
 	if err != nil {
-		h.editText(ctx, cq.Message.Chat.ID, cq.Message.ID, "Ошибка загрузки пользователя")
+		h.editText(ctx, chatID, msgID, "Ошибка загрузки пользователя")
 		return
 	}
 	page := findPageByID(profiles, id, h.cfg.UsersPerPage)
 	text, err := h.svc.GetUserDetails(apiCtx, id)
 	if err != nil {
-		h.editText(ctx, cq.Message.Chat.ID, cq.Message.ID, "Ошибка загрузки пользователя")
+		h.editText(ctx, chatID, msgID, "Ошибка загрузки пользователя")
 		return
 	}
-	h.editTextWithKeyboard(ctx, cq.Message.Chat.ID, cq.Message.ID, text, userDetailsKeyboard(id, page), tg.ParseModeMarkdown)
+	h.editTextWithKeyboard(ctx, chatID, msgID, text, userDetailsKeyboard(id, page), tg.ParseModeMarkdown)
 }
 
 func userDetailsKeyboard(id, page int) *tg.InlineKeyboardMarkup {
@@ -262,11 +283,16 @@ func (h *Handler) deleteUser(ctx context.Context, cq *tg.CallbackQuery, id int) 
 }
 
 func (h *Handler) startEditUser(ctx context.Context, cq *tg.CallbackQuery, id int) {
+	chatID, msgID, ok := callbackMessageMeta(cq)
+	if !ok {
+		h.answerCallback(ctx, cq.ID, "Сообщение недоступно")
+		return
+	}
 	apiCtx, cancel := context.WithTimeout(ctx, h.cfg.RequestTimeout)
 	defer cancel()
 	profiles, err := h.svc.ListProfiles(apiCtx)
 	if err != nil {
-		h.editText(ctx, cq.Message.Chat.ID, cq.Message.ID, "Ошибка загрузки")
+		h.editText(ctx, chatID, msgID, "Ошибка загрузки")
 		return
 	}
 	username := ""
@@ -278,14 +304,19 @@ func (h *Handler) startEditUser(ctx context.Context, cq *tg.CallbackQuery, id in
 	}
 	session, inbounds, err := h.svc.StartEditInbounds(apiCtx, id, username)
 	if err != nil {
-		h.editText(ctx, cq.Message.Chat.ID, cq.Message.ID, "Ошибка загрузки")
+		h.editText(ctx, chatID, msgID, "Ошибка загрузки")
 		return
 	}
 	h.store.SetEdit(cq.From.ID, session)
-	h.renderEditUser(ctx, cq.Message.Chat.ID, cq.Message.ID, session, inbounds)
+	h.renderEditUser(ctx, chatID, msgID, session, inbounds)
 }
 
 func (h *Handler) toggleInboundInEdit(ctx context.Context, cq *tg.CallbackQuery, tag string) {
+	chatID, msgID, ok := callbackMessageMeta(cq)
+	if !ok {
+		h.answerCallback(ctx, cq.ID, "Сообщение недоступно")
+		return
+	}
 	session, ok := h.store.GetEdit(cq.From.ID)
 	if !ok {
 		h.answerCallback(ctx, cq.ID, "Сессия истекла")
@@ -301,10 +332,11 @@ func (h *Handler) toggleInboundInEdit(ctx context.Context, cq *tg.CallbackQuery,
 		h.answerCallback(ctx, cq.ID, "Ошибка")
 		return
 	}
-	h.renderEditUser(ctx, cq.Message.Chat.ID, cq.Message.ID, session, inbounds)
+	h.renderEditUser(ctx, chatID, msgID, session, inbounds)
 }
 
 func (h *Handler) applyEditUser(ctx context.Context, cq *tg.CallbackQuery) {
+	chatID, msgID, hasMessage := callbackMessageMeta(cq)
 	session, ok := h.store.GetEdit(cq.From.ID)
 	if !ok {
 		h.answerCallback(ctx, cq.ID, "Сессия истекла")
@@ -313,7 +345,9 @@ func (h *Handler) applyEditUser(ctx context.Context, cq *tg.CallbackQuery) {
 	apiCtx, cancel := context.WithTimeout(ctx, h.cfg.RequestTimeout)
 	defer cancel()
 	if err := h.svc.ApplyEditInbounds(apiCtx, session); err != nil {
-		h.editText(ctx, cq.Message.Chat.ID, cq.Message.ID, "Не удалось применить изменения")
+		if hasMessage {
+			h.editText(ctx, chatID, msgID, "Не удалось применить изменения")
+		}
 		return
 	}
 	h.store.DeleteEdit(cq.From.ID)
@@ -321,10 +355,13 @@ func (h *Handler) applyEditUser(ctx context.Context, cq *tg.CallbackQuery) {
 }
 
 func (h *Handler) cancelEditUser(ctx context.Context, cq *tg.CallbackQuery) {
+	chatID, msgID, hasMessage := callbackMessageMeta(cq)
 	session, ok := h.store.GetEdit(cq.From.ID)
 	h.store.DeleteEdit(cq.From.ID)
 	if !ok {
-		h.editText(ctx, cq.Message.Chat.ID, cq.Message.ID, "Изменения отменены")
+		if hasMessage {
+			h.editText(ctx, chatID, msgID, "Изменения отменены")
+		}
 		return
 	}
 	h.showUserDetails(ctx, cq, session.UserID)
@@ -345,8 +382,13 @@ func (h *Handler) renderEditUser(ctx context.Context, chatID int64, msgID int, s
 }
 
 func (h *Handler) startAddConversation(ctx context.Context, cq *tg.CallbackQuery) {
+	chatID, _, ok := callbackMessageMeta(cq)
+	if !ok {
+		h.answerCallback(ctx, cq.ID, "Сообщение недоступно")
+		return
+	}
 	h.store.SetConversation(cq.From.ID, state.AddUserConversation{Step: state.AddStepUsername, StartedAt: time.Now(), UpdatedAt: time.Now()})
-	_, _ = h.bot.SendMessage(ctx, &botapi.SendMessageParams{ChatID: cq.Message.Chat.ID, Text: "Введите имя пользователя:"})
+	_, _ = h.bot.SendMessage(ctx, &botapi.SendMessageParams{ChatID: chatID, Text: "Введите имя пользователя:"})
 }
 
 func (h *Handler) handleConversationMessage(ctx context.Context, msg *tg.Message) {
@@ -442,7 +484,7 @@ func (h *Handler) editText(ctx context.Context, chatID int64, messageID int, tex
 	h.editTextWithKeyboard(ctx, chatID, messageID, text, nil)
 }
 
-func (h *Handler) editTextWithKeyboard(ctx context.Context, chatID int64, messageID int, text string, kb *tg.InlineKeyboardMarkup, parseMode ...string) {
+func (h *Handler) editTextWithKeyboard(ctx context.Context, chatID int64, messageID int, text string, kb *tg.InlineKeyboardMarkup, parseMode ...tg.ParseMode) {
 	params := &botapi.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: text, ReplyMarkup: kb}
 	if len(parseMode) > 0 {
 		params.ParseMode = parseMode[0]
@@ -465,4 +507,17 @@ func parseInt(parts []string, idx, def int) int {
 
 func sanitizeCode(s string) string {
 	return strings.ReplaceAll(s, "`", "'")
+}
+
+func callbackMessageMeta(cq *tg.CallbackQuery) (chatID int64, messageID int, ok bool) {
+	if cq == nil {
+		return 0, 0, false
+	}
+	if cq.Message.Message != nil {
+		return cq.Message.Message.Chat.ID, cq.Message.Message.ID, true
+	}
+	if cq.Message.InaccessibleMessage != nil {
+		return cq.Message.InaccessibleMessage.Chat.ID, cq.Message.InaccessibleMessage.MessageID, true
+	}
+	return 0, 0, false
 }

@@ -184,8 +184,8 @@ install_bun() {
 }
 
 install_go_for_bot() {
-    local required_major_minor="1.22"
-    local required_patch="1.22.12"
+    local required_major_minor="1.24"
+    local required_patch="1.24.0"
     local go_bin="/usr/local/go/bin/go"
 
     if command -v go &> /dev/null; then
