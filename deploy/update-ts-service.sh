@@ -29,10 +29,13 @@ else
   exit 1
 fi
 
-echo "[3/5] Restarting ${API_SERVICE}..."
+echo "[3/6] Ensuring persistent data directory..."
+mkdir -p /var/lib/xray-cli
+
+echo "[4/6] Restarting ${API_SERVICE}..."
 systemctl restart "$API_SERVICE"
 
-echo "[4/5] Waiting for service health..."
+echo "[5/6] Waiting for service health..."
 for i in {1..15}; do
   if systemctl is-active --quiet "$API_SERVICE"; then
     break
@@ -40,7 +43,7 @@ for i in {1..15}; do
   sleep 1
 done
 
-echo "[5/5] Service status"
+echo "[6/6] Service status"
 systemctl status "$API_SERVICE" --no-pager -l
 
 echo "Done. Bun/TypeScript service updated independently."

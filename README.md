@@ -36,6 +36,7 @@ API_KEY=replace-me
 XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json
 XRAY_API_ADDRESS=127.0.0.1:8080
 XRAY_BIN_PATH=/usr/local/bin/xray
+XRAYCLI_DATA_DIR=/var/lib/xray-cli
 XRAY_STATS_SYNC_INTERVAL_MS=300000
 XRAY_ANALYTICS_STEP_MS=900000
 XRAY_ANALYTICS_RETENTION_DAYS=400
@@ -77,3 +78,11 @@ Update both:
 ```bash
 sudo /usr/local/xray-cli/deploy.sh
 ```
+
+## Persistent analytics storage
+
+- Source of truth for profiles + traffic analytics is backend DB file:
+  - `/var/lib/xray-cli/xray-cli.json` (default via `XRAYCLI_DATA_DIR`)
+- This path is outside repository/build directories, so `git pull`, rebuilds, binary replacement, and service restarts do not reset statistics.
+- Backward compatibility:
+  - On first start, backend auto-migrates legacy DB from `~/.config/xray-cli/xray-cli.json` if present.

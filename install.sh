@@ -304,6 +304,8 @@ ensure_xraycli_api_env_file() {
     ensure_var "API_PORT" "2053"
     ensure_var "XRAY_API_ADDRESS" "127.0.0.1:8080"
     ensure_var "XRAY_BIN_PATH" "/usr/local/bin/xray"
+    ensure_var "XRAYCLI_DATA_DIR" "/var/lib/xray-cli"
+    mkdir -p /var/lib/xray-cli
 }
 
 create_xraycli_api_service() {

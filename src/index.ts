@@ -1,14 +1,31 @@
 #!/usr/bin/env bun
 
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
+import { copyFileSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { homedir } from 'os';
 import { execSync } from 'child_process';
 import crypto from 'crypto';
 
-const DB_DIR = `${homedir()}/.config/xray-cli`;
-mkdirSync(DB_DIR, { recursive: true });
-const DB_PATH = `${DB_DIR}/xray-cli.json`;
+function resolveDBPath(): string {
+  const configuredFile = (process.env.XRAYCLI_DB_PATH || '').trim();
+  if (configuredFile) {
+    mkdirSync(dirname(configuredFile), { recursive: true });
+    return configuredFile;
+  }
+  const configuredDir = (process.env.XRAYCLI_DATA_DIR || '').trim() || '/var/lib/xray-cli';
+  mkdirSync(configuredDir, { recursive: true });
+  return `${configuredDir}/xray-cli.json`;
+}
+
+const DB_PATH = resolveDBPath();
+const LEGACY_DB_PATH = `${homedir()}/.config/xray-cli/xray-cli.json`;
+if (!existsSync(DB_PATH) && existsSync(LEGACY_DB_PATH)) {
+  try {
+    copyFileSync(LEGACY_DB_PATH, DB_PATH);
+  } catch {
+    // Keep CLI startup resilient; database will be initialized on save.
+  }
+}
 const UI = {
   reset: '\x1b[0m',
   dim: '\x1b[2m',
