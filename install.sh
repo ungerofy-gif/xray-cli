@@ -222,15 +222,38 @@ EOF
 
     tee /usr/local/bin/xraycli-api > /dev/null << 'EOF'
 #!/bin/bash
-export PATH="$HOME/.bun/bin:$PATH"
-export XRAY_CONFIG_PATH="${XRAY_CONFIG_PATH:-/usr/local/etc/xray/config.json}"
-export API_PORT="${API_PORT:-2053}"
-export API_HOST="${API_HOST:-127.0.0.1}"
+if [ -f /etc/default/xraycli-api ]; then
+  # shellcheck disable=SC1091
+  . /etc/default/xraycli-api
+fi
+PATH="${HOME}/.bun/bin:${PATH}"
 exec "$HOME/.bun/bin/bun" run /usr/local/xray-cli/src/api/server.ts "$@"
 EOF
     chmod +x /usr/local/bin/xraycli-api
 
     log_info "Global scripts created: xraycli, xraycli-api"
+}
+
+ensure_xraycli_api_env_file() {
+    log_step "Ensuring /etc/default/xraycli-api exists and has required variables..."
+
+    local env_file="/etc/default/xraycli-api"
+    touch "$env_file"
+
+    ensure_var() {
+        local key="$1"
+        local value="$2"
+        if ! grep -qE "^${key}=" "$env_file"; then
+            echo "${key}=${value}" >> "$env_file"
+            log_info "Added ${key} to ${env_file}"
+        fi
+    }
+
+    ensure_var "XRAY_CONFIG_PATH" "/usr/local/etc/xray/config.json"
+    ensure_var "API_HOST" "127.0.0.1"
+    ensure_var "API_PORT" "2053"
+    ensure_var "XRAY_API_ADDRESS" "127.0.0.1:8080"
+    ensure_var "XRAY_BIN_PATH" "/usr/local/bin/xray"
 }
 
 create_xraycli_api_service() {
@@ -247,9 +270,6 @@ Type=simple
 User=root
 WorkingDirectory=/usr/local/xray-cli
 EnvironmentFile=-/etc/default/xraycli-api
-Environment=XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json
-Environment=API_HOST=127.0.0.1
-Environment=API_PORT=2053
 ExecStart=/usr/local/bin/xraycli-api
 Restart=always
 RestartSec=2
@@ -361,6 +381,7 @@ main() {
     enable_start_xray
     install_bun
     install_xray_cli_deps
+    ensure_xraycli_api_env_file
     create_global_scripts
     create_xraycli_api_service
     verify_installation
