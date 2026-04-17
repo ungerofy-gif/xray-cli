@@ -319,6 +319,14 @@ function buildServerAnalytics(db: Database) {
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
+app.use((req, res, next) => {
+  const started = Date.now();
+  logDebug('http.request', { method: req.method, path: req.path });
+  res.on('finish', () => {
+    logDebug('http.response', { method: req.method, path: req.path, status: res.statusCode, duration_ms: Date.now() - started });
+  });
+  next();
+});
 
 const XRAY_CONFIG_PATH = process.env.XRAY_CONFIG_PATH || '/usr/local/etc/xray/config.json';
 const API_PORT = Number(process.env.API_PORT) || 2053;
@@ -331,6 +339,16 @@ const XRAY_ANALYTICS_STEP_MS = Math.max(Number(process.env.XRAY_ANALYTICS_STEP_M
 const XRAY_ANALYTICS_RETENTION_DAYS = Math.max(Number(process.env.XRAY_ANALYTICS_RETENTION_DAYS || 400), 30);
 const XRAY_BIN_PATH = process.env.XRAY_BIN_PATH || '';
 const XRAY_DYNAMIC_APPLY = process.env.XRAY_DYNAMIC_APPLY === undefined ? '1' : process.env.XRAY_DYNAMIC_APPLY;
+const API_DEBUG_LOG = process.env.API_DEBUG_LOG === undefined ? '1' : process.env.API_DEBUG_LOG;
+
+function debugEnabled(): boolean {
+  return API_DEBUG_LOG !== '0';
+}
+
+function logDebug(event: string, details: Record<string, unknown> = {}) {
+  if (!debugEnabled()) return;
+  console.log(JSON.stringify({ level: 'DEBUG', event, ...details, time: new Date().toISOString() }));
+}
 
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (!API_KEY) {
@@ -365,6 +383,7 @@ function saveConfigAndReload(): void {
   const config = buildXrayConfig();
   mkdirSync(dirname(XRAY_CONFIG_PATH), { recursive: true });
   writeFileSync(XRAY_CONFIG_PATH, JSON.stringify(config, null, 2));
+  logDebug('xray.config.saved', { path: XRAY_CONFIG_PATH });
   // Keep runtime stable: do not auto-reload or auto-restart Xray on each profile change.
   // Changes are queued and applied by explicit restart.
   setXrayApplyPending(true);
@@ -404,11 +423,18 @@ function buildRuntimeAccount(profile: Profile, inbound: XrayInbound): Record<str
 }
 
 function runXrayAPICommand(command: string, args: string[]): boolean {
+  const xrayBin = getXrayCommandBinary();
+  const fullCommand = [xrayBin, 'api', command, ...args].join(' ');
+  logDebug('xray.api.exec.start', { command, fullCommand });
   try {
-    const xrayBin = getXrayCommandBinary();
-    execSync([xrayBin, 'api', command, ...args].join(' '), { stdio: 'pipe' });
+    const out = execSync(fullCommand, { stdio: 'pipe', encoding: 'utf8' });
+    logDebug('xray.api.exec.success', { command, output: normalizeText(out || '') });
     return true;
-  } catch {
+  } catch (error: any) {
+    const stdout = typeof error?.stdout === 'string' ? error.stdout : String(error?.stdout || '');
+    const stderr = typeof error?.stderr === 'string' ? error.stderr : String(error?.stderr || '');
+    const message = normalizeText(String(error?.message || ''));
+    logDebug('xray.api.exec.fail', { command, message, stdout: normalizeText(stdout), stderr: normalizeText(stderr) });
     return false;
   }
 }
@@ -427,25 +453,41 @@ function removeUserRuntimeFromInbound(profile: Profile, inboundTag: string): boo
 }
 
 function applyUserRuntimeState(profile: Profile): { ok: boolean; message: string } {
+  logDebug('xray.runtime.apply.begin', {
+    user_id: profile.id,
+    username: profile.username,
+    enable: profile.enable,
+    inbound_tags: profile.inbound_tags || []
+  });
   if (!xrayDynamicApplyEnabled()) {
+    logDebug('xray.runtime.apply.skip', { reason: 'dynamic apply disabled by env' });
     return { ok: false, message: 'dynamic apply disabled by XRAY_DYNAMIC_APPLY=0' };
   }
   const inbounds = getXrayInbounds();
   if (!inbounds.length) {
+    logDebug('xray.runtime.apply.skip', { reason: 'no managed inbounds found in xray config' });
     return { ok: false, message: 'no managed inbounds found in xray config' };
   }
 
   let failures = 0;
   for (const ib of inbounds) {
     const shouldBeEnabled = profile.enable === 1 && (profile.inbound_tags || []).includes(ib.tag);
+    logDebug('xray.runtime.apply.inbound', {
+      user_id: profile.id,
+      username: profile.username,
+      inbound: ib.tag,
+      operation: shouldBeEnabled ? 'adu' : 'rmu'
+    });
     const applied = shouldBeEnabled
       ? addUserRuntimeToInbound(profile, ib)
       : removeUserRuntimeFromInbound(profile, ib.tag);
     if (!applied) failures++;
   }
   if (failures > 0) {
+    logDebug('xray.runtime.apply.failed', { user_id: profile.id, failures });
     return { ok: false, message: `runtime apply failed for ${failures} inbound(s)` };
   }
+  logDebug('xray.runtime.apply.success', { user_id: profile.id });
   return { ok: true, message: 'runtime apply completed' };
 }
 
@@ -536,10 +578,13 @@ function isXrayRunning(): boolean {
 }
 
 function restartXray(): boolean {
+  logDebug('xray.restart.start');
   try {
     execSync('systemctl restart xray');
+    logDebug('xray.restart.success');
     return true;
-  } catch {
+  } catch (error: any) {
+    logDebug('xray.restart.fail', { message: normalizeText(String(error?.message || '')) });
     return false;
   }
 }
@@ -553,12 +598,14 @@ function reloadXray(): { ok: boolean; method: string; detail: string } {
   for (const attempt of attempts) {
     try {
       execSync(attempt.cmd, { stdio: 'pipe' });
+      logDebug('xray.reload.success', { method: attempt.method });
       return { ok: true, method: attempt.method, detail: '' };
     } catch (error: any) {
       const stdout = typeof error?.stdout === 'string' ? error.stdout : String(error?.stdout || '');
       const stderr = typeof error?.stderr === 'string' ? error.stderr : String(error?.stderr || '');
       const message = normalizeText(String(error?.message || ''));
       lastError = normalizeText([message, stdout, stderr].filter(Boolean).join(' | ')) || 'unknown error';
+      logDebug('xray.reload.fail.attempt', { method: attempt.method, detail: lastError });
     }
   }
 
