@@ -39,6 +39,7 @@ interface Settings {
   profile_update_interval: number;
   show_traffic_limit: number;
   show_expiration: number;
+  xray_apply_pending: number;
 }
 
 interface Database {
@@ -175,7 +176,8 @@ function loadDB(): Database {
         global_inbound_port: Number(raw.settings?.global_inbound_port ?? 0) || 0,
         profile_update_interval: Number(raw.settings?.profile_update_interval ?? 2) || 2,
         show_traffic_limit: raw.settings?.show_traffic_limit === undefined ? 1 : (raw.settings?.show_traffic_limit ? 1 : 0),
-        show_expiration: raw.settings?.show_expiration === undefined ? 1 : (raw.settings?.show_expiration ? 1 : 0)
+        show_expiration: raw.settings?.show_expiration === undefined ? 1 : (raw.settings?.show_expiration ? 1 : 0),
+        xray_apply_pending: raw.settings?.xray_apply_pending ? 1 : 0
       },
       nextProfileId: raw.nextProfileId || 1,
       analytics: normalizeAnalytics(raw.analytics)
@@ -192,7 +194,8 @@ function loadDB(): Database {
       global_inbound_port: 0,
       profile_update_interval: 2,
       show_traffic_limit: 1,
-      show_expiration: 1
+      show_expiration: 1,
+      xray_apply_pending: 0
     },
     nextProfileId: 1,
     analytics: normalizeAnalytics(undefined)
@@ -351,14 +354,19 @@ function getProfileById(db: Database, idParam: unknown): Profile | null {
   return db.profiles.find(p => p.id === id) || null;
 }
 
+function setXrayApplyPending(value: boolean): void {
+  const db = loadDB();
+  db.settings.xray_apply_pending = value ? 1 : 0;
+  saveDB(db);
+}
+
 function saveConfigAndReload(): void {
   const config = buildXrayConfig();
   mkdirSync(dirname(XRAY_CONFIG_PATH), { recursive: true });
   writeFileSync(XRAY_CONFIG_PATH, JSON.stringify(config, null, 2));
-  const reload = reloadXray();
-  if (!reload.ok) {
-    throw new Error(`Failed to reload xray (${reload.method}): ${reload.detail}`);
-  }
+  // Keep runtime stable: do not auto-reload or auto-restart Xray on each profile change.
+  // Changes are queued and applied by explicit restart.
+  setXrayApplyPending(true);
 }
 
 function generateShortToken(length = 10): string {
@@ -458,8 +466,7 @@ function restartXray(): boolean {
 
 function reloadXray(): { ok: boolean; method: string; detail: string } {
   const attempts: Array<{ method: string; cmd: string }> = [
-    { method: 'systemctl reload', cmd: 'systemctl reload xray' },
-    { method: 'systemctl HUP', cmd: 'systemctl kill -s HUP xray' }
+    { method: 'systemctl reload', cmd: 'systemctl reload xray' }
   ];
 
   let lastError = 'unknown error';
@@ -1130,12 +1137,15 @@ app.get('/api/profiles/:id/analytics', requireAuth, (req, res) => {
 });
 
 app.post('/reload', requireAuth, (req, res) => {
-  try {
-    saveConfigAndReload();
-    res.json({ status: 'ok' });
-  } catch (error: any) {
-    res.status(500).json({ detail: error.message });
+  const reload = reloadXray();
+  if (reload.ok) {
+    setXrayApplyPending(false);
+    return res.json({ status: 'ok', method: reload.method });
   }
+  res.status(409).json({
+    detail: `Reload is not supported in current systemd/xray setup (${reload.method} failed). Use explicit restart.`,
+    apply_pending: true
+  });
 });
 
 app.get('/:token', (req, res) => {
@@ -1390,7 +1400,8 @@ app.post('/api/xray/update', requireAuth, (req, res) => {
 
 app.get('/api/xray/status', requireAuth, (req, res) => {
   const info = detectXray();
-  res.json(info);
+  const db = loadDB();
+  res.json({ ...info, apply_pending: db.settings?.xray_apply_pending ? 1 : 0 });
 });
 
 app.post('/api/xray/start', requireAuth, (req, res) => {
@@ -1403,6 +1414,7 @@ app.post('/api/xray/start', requireAuth, (req, res) => {
 
 app.post('/api/xray/restart', requireAuth, (req, res) => {
   if (restartXray()) {
+    setXrayApplyPending(false);
     res.json({ status: 'ok' });
   } else {
     res.status(500).json({ detail: 'Failed to restart xray' });
