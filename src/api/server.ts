@@ -334,6 +334,28 @@ let statsCache: { at: number; values: Record<string, number> } = { at: 0, values
 
 function parseXrayStatsOutput(raw: string): Record<string, number> {
   const stats: Record<string, number> = {};
+  const trimmed = raw.trim();
+
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed) as any;
+      const statItems = Array.isArray(parsed?.stat)
+        ? parsed.stat
+        : (Array.isArray(parsed) ? parsed : []);
+      for (const item of statItems) {
+        const name = typeof item?.name === 'string' ? item.name : '';
+        const rawValue = item?.value;
+        const value = typeof rawValue === 'number' ? rawValue : Number(rawValue);
+        if (name && Number.isFinite(value)) {
+          stats[name] = Math.max(0, Math.floor(value));
+        }
+      }
+      if (Object.keys(stats).length > 0) return stats;
+    } catch {
+      // Fall through to plain/proto parsing for older or non-JSON output formats.
+    }
+  }
+
   for (const line of raw.split('\n')) {
     const plain = line.match(/^([^"\s][^:]*?)\s+(\d+)$/);
     if (plain && plain[1] && plain[2]) {
