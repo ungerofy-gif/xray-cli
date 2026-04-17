@@ -10,19 +10,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/example/xray-cli-ts/go-bot/internal/analytics"
 	"github.com/example/xray-cli-ts/go-bot/internal/api"
 	"github.com/example/xray-cli-ts/go-bot/internal/models"
 	"github.com/example/xray-cli-ts/go-bot/internal/state"
 )
 
 type Service struct {
-	api       *api.Client
-	analytics *analytics.Store
+	api *api.Client
 }
 
-func New(apiClient *api.Client, analyticsStore *analytics.Store) *Service {
-	return &Service{api: apiClient, analytics: analyticsStore}
+func New(apiClient *api.Client) *Service {
+	return &Service{api: apiClient}
 }
 
 func (s *Service) ListProfiles(ctx context.Context) ([]models.Profile, error) {
@@ -33,9 +31,6 @@ func (s *Service) ListProfiles(ctx context.Context) ([]models.Profile, error) {
 	sort.Slice(profiles, func(i, j int) bool {
 		return strings.ToLower(profiles[i].Username) < strings.ToLower(profiles[j].Username)
 	})
-	if s.analytics != nil {
-		s.analytics.RecordProfiles(profiles)
-	}
 	return profiles, nil
 }
 
@@ -73,10 +68,6 @@ func (s *Service) GetUserDetails(ctx context.Context, id int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if s.analytics != nil {
-		_ = s.recordProfileFromGet(ctx)
-	}
-
 	status := "Выключен"
 	if profile.Enable == 1 {
 		status = "Включен"
@@ -102,13 +93,18 @@ func (s *Service) GetUserDetails(ctx context.Context, id int) (string, error) {
 	b.WriteString(fmt.Sprintf("Лимит по трафику: <b>%.2f GB</b>\n", profile.LimitGB))
 	b.WriteString(fmt.Sprintf("Использовано трафика: <b>%.2f GB</b>\n", usageGB))
 	b.WriteString(fmt.Sprintf("Истекает: <b>%s</b>\n", html.EscapeString(expires)))
-	if s.analytics != nil {
-		periods := s.analytics.GetPeriodUsage(profile.ID, currentUsageBytes, time.Now().UTC())
-		b.WriteString("\n🗂 <b>Аналитика пользователя</b>\n")
-		b.WriteString("1 день: " + formatPeriod(periods.Day.Bytes, periods.Day.Available) + "\n")
-		b.WriteString("1 неделя: " + formatPeriod(periods.Week.Bytes, periods.Week.Available) + "\n")
-		b.WriteString("1 месяц: " + formatPeriod(periods.Month.Bytes, periods.Month.Available) + "\n")
-		b.WriteString("1 год: " + formatPeriod(periods.Year.Bytes, periods.Year.Available) + "\n")
+	analyticsData, analyticsErr := s.api.GetProfileAnalytics(ctx, id)
+	b.WriteString("\n🗂 <b>Аналитика пользователя</b>\n")
+	if analyticsErr != nil {
+		b.WriteString("1 день: недостаточно данных\n")
+		b.WriteString("1 неделя: недостаточно данных\n")
+		b.WriteString("1 месяц: недостаточно данных\n")
+		b.WriteString("1 год: недостаточно данных\n")
+	} else {
+		b.WriteString("1 день: " + formatPeriod(analyticsData.Profile.Periods.Day.Bytes, analyticsData.Profile.Periods.Day.Available) + "\n")
+		b.WriteString("1 неделя: " + formatPeriod(analyticsData.Profile.Periods.Week.Bytes, analyticsData.Profile.Periods.Week.Available) + "\n")
+		b.WriteString("1 месяц: " + formatPeriod(analyticsData.Profile.Periods.Month.Bytes, analyticsData.Profile.Periods.Month.Available) + "\n")
+		b.WriteString("1 год: " + formatPeriod(analyticsData.Profile.Periods.Year.Bytes, analyticsData.Profile.Periods.Year.Available) + "\n")
 	}
 	b.WriteString("\n🔗 <b>Подписки</b>\n")
 
@@ -128,7 +124,7 @@ func formatPeriod(bytes uint64, available bool) string {
 	if !available {
 		return "недостаточно данных"
 	}
-	return "<b>" + analytics.FormatBytesGiB(bytes) + "</b>"
+	return "<b>" + formatBytesGiB(bytes) + "</b>"
 }
 
 func humanClientName(key string) string {
@@ -232,28 +228,17 @@ func (s *Service) ReloadXray(ctx context.Context) error {
 	return s.api.Reload(ctx)
 }
 
-func ServerTotalUsageBytes(profiles []models.Profile) uint64 {
-	var total uint64
-	for _, p := range profiles {
-		raw := p.UploadBytes + p.DownloadBytes
-		if raw <= 0 {
-			continue
-		}
-		total += uint64(raw)
+func (s *Service) GetServerAnalytics(ctx context.Context) (*models.ServerAnalytics, error) {
+	out, err := s.api.GetAnalytics(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return total
+	return &out.Server, nil
 }
 
-func (s *Service) recordProfileFromGet(ctx context.Context) error {
-	if s.analytics == nil {
-		return nil
-	}
-	profiles, err := s.api.ListProfiles(ctx)
-	if err != nil {
-		return err
-	}
-	s.analytics.RecordProfiles(profiles)
-	return nil
+func formatBytesGiB(bytes uint64) string {
+	gb := float64(bytes) / 1024 / 1024 / 1024
+	return fmt.Sprintf("%.2f GB", gb)
 }
 
 func ParsePositiveFloat(raw string) (float64, error) {

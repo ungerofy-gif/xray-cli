@@ -182,14 +182,14 @@ func (h *Handler) showSystemState(ctx context.Context, cq *tg.CallbackQuery) {
 
 	apiCtx, apiCancel := context.WithTimeout(ctx, h.cfg.RequestTimeout)
 	defer apiCancel()
-	profiles, err := h.svc.ListProfiles(apiCtx)
+	serverAnalytics, err := h.svc.GetServerAnalytics(apiCtx)
 	if err != nil {
-		h.editText(ctx, chatID, msgID, "Не удалось загрузить пользователей")
+		h.editText(ctx, chatID, msgID, "Не удалось загрузить аналитику")
 		return
 	}
 
-	totalUsageGB := float64(service.ServerTotalUsageBytes(profiles)) / 1024 / 1024 / 1024
-	text := fmt.Sprintf("🖥 <b>Состояние системы</b>\n\n• Ядер: <b>%d</b>\n• CPU: <b>%.1f%%</b>\n• RAM: <b>%d MB / %d MB</b>\n• Общее количество пользователей: <b>%d</b>\n• Общий трафик сервера: <b>%.2f GB</b>", m.Cores, m.CPUPercent, m.RAMUsedMB, m.RAMTotalMB, len(profiles), totalUsageGB)
+	totalUsageGB := float64(serverAnalytics.TotalTrafficBytes) / 1024 / 1024 / 1024
+	text := fmt.Sprintf("🖥 <b>Состояние системы</b>\n\n• Ядер: <b>%d</b>\n• CPU: <b>%.1f%%</b>\n• RAM: <b>%d MB / %d MB</b>\n• Общее количество пользователей: <b>%d</b>\n• Общий трафик сервера: <b>%.2f GB</b>", m.Cores, m.CPUPercent, m.RAMUsedMB, m.RAMTotalMB, serverAnalytics.UsersCount, totalUsageGB)
 	h.editHTMLWithKeyboard(ctx, chatID, msgID, text, mainKeyboard())
 }
 

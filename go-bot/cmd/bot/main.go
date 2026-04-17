@@ -8,7 +8,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/example/xray-cli-ts/go-bot/internal/analytics"
 	"github.com/example/xray-cli-ts/go-bot/internal/api"
 	"github.com/example/xray-cli-ts/go-bot/internal/config"
 	"github.com/example/xray-cli-ts/go-bot/internal/service"
@@ -26,8 +25,7 @@ func main() {
 	}
 
 	apiClient := api.New(cfg.APIBaseURL, cfg.APIKey, cfg.RequestTimeout)
-	analyticsStore := analytics.NewStore(cfg.AnalyticsPath, cfg.AnalyticsStep, logger)
-	svc := service.New(apiClient, analyticsStore)
+	svc := service.New(apiClient)
 	store := state.NewStore(20 * time.Minute)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

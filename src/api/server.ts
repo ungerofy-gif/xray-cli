@@ -45,6 +45,19 @@ interface Database {
   profiles: Profile[];
   settings: Settings;
   nextProfileId: number;
+  analytics: AnalyticsStore;
+}
+
+interface TrafficSample {
+  at: string;
+  users: Record<string, number>;
+  server_total: number;
+}
+
+interface AnalyticsStore {
+  version: number;
+  step_ms: number;
+  samples: TrafficSample[];
 }
 
 interface XrayInbound {
@@ -164,7 +177,8 @@ function loadDB(): Database {
         show_traffic_limit: raw.settings?.show_traffic_limit === undefined ? 1 : (raw.settings?.show_traffic_limit ? 1 : 0),
         show_expiration: raw.settings?.show_expiration === undefined ? 1 : (raw.settings?.show_expiration ? 1 : 0)
       },
-      nextProfileId: raw.nextProfileId || 1
+      nextProfileId: raw.nextProfileId || 1,
+      analytics: normalizeAnalytics(raw.analytics)
     };
   }
   return {
@@ -180,12 +194,124 @@ function loadDB(): Database {
       show_traffic_limit: 1,
       show_expiration: 1
     },
-    nextProfileId: 1
+    nextProfileId: 1,
+    analytics: normalizeAnalytics(undefined)
   };
 }
 
 function saveDB(db: Database) {
   writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+}
+
+function normalizeAnalytics(raw: any): AnalyticsStore {
+  const samples = Array.isArray(raw?.samples) ? raw.samples : [];
+  const normalized: TrafficSample[] = [];
+  for (const sample of samples) {
+    const at = typeof sample?.at === 'string' ? sample.at : '';
+    if (!at) continue;
+    const usersRaw = sample?.users && typeof sample.users === 'object' ? sample.users : {};
+    const users: Record<string, number> = {};
+    for (const [k, v] of Object.entries(usersRaw)) {
+      const n = Number(v);
+      if (Number.isFinite(n) && n >= 0) users[String(k)] = Math.floor(n);
+    }
+    const serverTotal = Number(sample?.server_total);
+    normalized.push({
+      at,
+      users,
+      server_total: Number.isFinite(serverTotal) && serverTotal >= 0 ? Math.floor(serverTotal) : 0
+    });
+  }
+  return {
+    version: 1,
+    step_ms: Math.max(Number(raw?.step_ms) || XRAY_ANALYTICS_STEP_MS, 5000),
+    samples: normalized
+  };
+}
+
+function pruneAnalyticsSamples(samples: TrafficSample[]): TrafficSample[] {
+  const cutoff = Date.now() - XRAY_ANALYTICS_RETENTION_DAYS * 86400000;
+  return samples.filter(s => {
+    const t = new Date(s.at).getTime();
+    return Number.isFinite(t) && t >= cutoff;
+  });
+}
+
+function recordAnalyticsSnapshot(db: Database, now = new Date()): boolean {
+  if (!db.analytics) db.analytics = normalizeAnalytics(undefined);
+  if (!Array.isArray(db.analytics.samples)) db.analytics.samples = [];
+  db.analytics.step_ms = Math.max(db.analytics.step_ms || XRAY_ANALYTICS_STEP_MS, 5000);
+
+  const users: Record<string, number> = {};
+  let total = 0;
+  for (const p of db.profiles) {
+    const current = Math.max(0, Math.floor((p.upload_bytes || 0) + (p.download_bytes || 0)));
+    users[String(p.id)] = current;
+    total += current;
+  }
+  const sample: TrafficSample = { at: now.toISOString(), users, server_total: Math.max(0, total) };
+
+  const prev = db.analytics.samples.length > 0 ? db.analytics.samples[db.analytics.samples.length - 1] : null;
+  if (!prev) {
+    db.analytics.samples = pruneAnalyticsSamples([sample]);
+    return true;
+  }
+
+  const prevTime = new Date(prev.at).getTime();
+  if (!Number.isFinite(prevTime) || now.getTime()-prevTime >= db.analytics.step_ms) {
+    db.analytics.samples = pruneAnalyticsSamples([...db.analytics.samples, sample]);
+    return true;
+  }
+
+  db.analytics.samples[db.analytics.samples.length - 1] = sample;
+  db.analytics.samples = pruneAnalyticsSamples(db.analytics.samples);
+  return true;
+}
+
+function findPeriodUsage(db: Database, profile: Profile, periodMs: number): { bytes: number; available: boolean } {
+  const samples = db.analytics?.samples || [];
+  if (!samples.length) return { bytes: 0, available: false };
+
+  const current = Math.max(0, Math.floor((profile.upload_bytes || 0) + (profile.download_bytes || 0)));
+  const cutoff = Date.now() - periodMs;
+  const key = String(profile.id);
+  for (let i = samples.length - 1; i >= 0; i--) {
+    const sample = samples[i];
+    if (!sample) continue;
+    const t = new Date(sample.at).getTime();
+    if (!Number.isFinite(t) || t > cutoff) continue;
+    const pastRaw = sample.users[key];
+    const past = Number(pastRaw);
+    if (!Number.isFinite(past)) return { bytes: 0, available: false };
+    return { bytes: Math.max(0, current - Math.floor(past)), available: true };
+  }
+  return { bytes: 0, available: false };
+}
+
+function buildProfileAnalytics(db: Database, profile: Profile) {
+  return {
+    user_id: profile.id,
+    username: profile.username,
+    current_total_bytes: Math.max(0, Math.floor((profile.upload_bytes || 0) + (profile.download_bytes || 0))),
+    periods: {
+      day: findPeriodUsage(db, profile, 24 * 60 * 60 * 1000),
+      week: findPeriodUsage(db, profile, 7 * 24 * 60 * 60 * 1000),
+      month: findPeriodUsage(db, profile, 30 * 24 * 60 * 60 * 1000),
+      year: findPeriodUsage(db, profile, 365 * 24 * 60 * 60 * 1000)
+    }
+  };
+}
+
+function buildServerAnalytics(db: Database) {
+  let total = 0;
+  for (const p of db.profiles) {
+    total += Math.max(0, Math.floor((p.upload_bytes || 0) + (p.download_bytes || 0)));
+  }
+  return {
+    total_traffic_bytes: total,
+    users_count: db.profiles.length,
+    samples_count: db.analytics?.samples?.length || 0
+  };
 }
 
 const app = express();
@@ -198,6 +324,8 @@ const API_KEY = process.env.API_KEY || '';
 const XRAY_API_ADDRESS = process.env.XRAY_API_ADDRESS || '127.0.0.1:8080';
 const STATS_CACHE_TTL_MS = Number(process.env.XRAY_STATS_CACHE_TTL_MS || 1000);
 const STATS_SYNC_INTERVAL_MS = Number(process.env.XRAY_STATS_SYNC_INTERVAL_MS || 5000);
+const XRAY_ANALYTICS_STEP_MS = Math.max(Number(process.env.XRAY_ANALYTICS_STEP_MS || 900000), STATS_SYNC_INTERVAL_MS || 0, 5000);
+const XRAY_ANALYTICS_RETENTION_DAYS = Math.max(Number(process.env.XRAY_ANALYTICS_RETENTION_DAYS || 400), 30);
 const XRAY_BIN_PATH = process.env.XRAY_BIN_PATH || '';
 
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -417,7 +545,9 @@ function getXrayStats(forceFresh = false): Record<string, number> {
 function refreshAndPersistProfileUsage(forceFresh = false): { stats: Record<string, number>; updated: boolean } {
   const stats = getXrayStats(forceFresh);
   const db = loadDB();
-  const updated = syncProfileUsageFromStats(db, stats);
+  const usageUpdated = syncProfileUsageFromStats(db, stats);
+  const analyticsUpdated = recordAnalyticsSnapshot(db);
+  const updated = usageUpdated || analyticsUpdated;
   if (updated) saveDB(db);
   return { stats, updated };
 }
@@ -962,6 +1092,25 @@ app.get('/stats', requireAuth, (req, res) => {
   });
   
   res.json({ xray: stats, profiles: profileStats });
+});
+
+app.get('/api/analytics', requireAuth, (req, res) => {
+  refreshAndPersistProfileUsage(true);
+  const db = loadDB();
+  res.json({
+    server: buildServerAnalytics(db)
+  });
+});
+
+app.get('/api/profiles/:id/analytics', requireAuth, (req, res) => {
+  refreshAndPersistProfileUsage(true);
+  const db = loadDB();
+  const profile = getProfileById(db, req.params.id);
+  if (!profile) return res.status(404).json({ detail: 'Profile not found' });
+  res.json({
+    profile: buildProfileAnalytics(db, profile),
+    server: buildServerAnalytics(db)
+  });
 });
 
 app.post('/reload', requireAuth, (req, res) => {

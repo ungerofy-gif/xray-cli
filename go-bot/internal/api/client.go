@@ -106,6 +106,22 @@ func (c *Client) Reload(ctx context.Context) error {
 	return c.doJSON(ctx, http.MethodPost, "/reload", nil, nil)
 }
 
+func (c *Client) GetAnalytics(ctx context.Context) (*models.AnalyticsResponse, error) {
+	var out models.AnalyticsResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/api/analytics", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) GetProfileAnalytics(ctx context.Context, id int) (*models.ProfileAnalyticsResponse, error) {
+	var out models.ProfileAnalyticsResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/api/profiles/"+strconv.Itoa(id)+"/analytics", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 type CreateProfileRequest struct {
 	Username       string  `json:"username"`
 	LimitGB        float64 `json:"limit_gb"`

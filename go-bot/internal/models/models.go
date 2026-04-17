@@ -36,3 +36,35 @@ type ToggleResponse struct {
 	Status string `json:"status"`
 	Enable int    `json:"enable"`
 }
+
+type AnalyticsPeriod struct {
+	Bytes     uint64 `json:"bytes"`
+	Available bool   `json:"available"`
+}
+
+type ProfileAnalytics struct {
+	UserID            int    `json:"user_id"`
+	Username          string `json:"username"`
+	CurrentTotalBytes uint64 `json:"current_total_bytes"`
+	Periods           struct {
+		Day   AnalyticsPeriod `json:"day"`
+		Week  AnalyticsPeriod `json:"week"`
+		Month AnalyticsPeriod `json:"month"`
+		Year  AnalyticsPeriod `json:"year"`
+	} `json:"periods"`
+}
+
+type ServerAnalytics struct {
+	TotalTrafficBytes uint64 `json:"total_traffic_bytes"`
+	UsersCount        int    `json:"users_count"`
+	SamplesCount      int    `json:"samples_count"`
+}
+
+type AnalyticsResponse struct {
+	Server ServerAnalytics `json:"server"`
+}
+
+type ProfileAnalyticsResponse struct {
+	Profile ProfileAnalytics `json:"profile"`
+	Server  ServerAnalytics  `json:"server"`
+}
