@@ -183,6 +183,56 @@ install_bun() {
     fi
 }
 
+install_go_for_bot() {
+    local required_major_minor="1.22"
+    local required_patch="1.22.12"
+    local go_bin="/usr/local/go/bin/go"
+
+    if command -v go &> /dev/null; then
+        local installed_version
+        installed_version="$(go version | awk '{print $3}' | sed 's/^go//')"
+        if [[ "$installed_version" == "$required_major_minor".* ]]; then
+            log_info "Go already installed and compatible: go${installed_version}"
+            return
+        fi
+        log_warn "Go version go${installed_version} is not compatible. Installing go${required_patch}..."
+    else
+        log_step "Installing Go ${required_patch} for Telegram bot build..."
+    fi
+
+    local arch
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64|amd64) arch="amd64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        *)
+            log_error "Unsupported CPU architecture for Go install: ${arch}"
+            exit 1
+            ;;
+    esac
+
+    local tarball="go${required_patch}.linux-${arch}.tar.gz"
+    local url="https://go.dev/dl/${tarball}"
+    local tmp="/tmp/${tarball}"
+
+    curl -fsSL "$url" -o "$tmp"
+    rm -rf /usr/local/go
+    tar -C /usr/local -xzf "$tmp"
+    rm -f "$tmp"
+
+    if [ ! -x "$go_bin" ]; then
+        log_error "Go installation failed"
+        exit 1
+    fi
+
+    if ! grep -q '/usr/local/go/bin' /etc/profile; then
+        echo 'export PATH=/usr/local/go/bin:$PATH' >> /etc/profile
+    fi
+
+    export PATH="/usr/local/go/bin:$PATH"
+    log_info "Go installed: $($go_bin version)"
+}
+
 install_xray_cli_deps() {
     log_step "Installing xray-cli dependencies..."
     
@@ -317,6 +367,13 @@ verify_installation() {
     else
         echo -e "  Bun:      ${RED}✗${NC} Not found"
     fi
+
+    if command -v go &> /dev/null; then
+        GO_VERSION=$(go version 2>/dev/null || echo "unknown")
+        echo -e "  Go:       ${GREEN}✓${NC} $GO_VERSION"
+    else
+        echo -e "  Go:       ${RED}✗${NC} Not found"
+    fi
     
     if [ -f "/usr/local/etc/xray/config.json" ]; then
         echo -e "  Config:   ${GREEN}✓${NC} /usr/local/etc/xray/config.json"
@@ -380,6 +437,7 @@ main() {
     install_xray
     enable_start_xray
     install_bun
+    install_go_for_bot
     install_xray_cli_deps
     ensure_xraycli_api_env_file
     create_global_scripts

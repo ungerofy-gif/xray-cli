@@ -1,0 +1,25 @@
+[Unit]
+Description=Xray Telegram Bot (Go)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/xray-cli-ts/go-bot
+EnvironmentFile=-/etc/default/xraycli-api
+EnvironmentFile=-/etc/default/xraycli-telegram-bot
+ExecStart=/root/xray-cli-ts/go-bot/bin/xray-telegram-bot
+Restart=always
+RestartSec=3
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=/root/xray-cli-ts
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
