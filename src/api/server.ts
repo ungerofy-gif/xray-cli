@@ -330,6 +330,7 @@ const STATS_SYNC_INTERVAL_MS = Number(process.env.XRAY_STATS_SYNC_INTERVAL_MS ||
 const XRAY_ANALYTICS_STEP_MS = Math.max(Number(process.env.XRAY_ANALYTICS_STEP_MS || 900000), STATS_SYNC_INTERVAL_MS || 0, 5000);
 const XRAY_ANALYTICS_RETENTION_DAYS = Math.max(Number(process.env.XRAY_ANALYTICS_RETENTION_DAYS || 400), 30);
 const XRAY_BIN_PATH = process.env.XRAY_BIN_PATH || '';
+const XRAY_DYNAMIC_APPLY = process.env.XRAY_DYNAMIC_APPLY === undefined ? '1' : process.env.XRAY_DYNAMIC_APPLY;
 
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (!API_KEY) {
@@ -367,6 +368,93 @@ function saveConfigAndReload(): void {
   // Keep runtime stable: do not auto-reload or auto-restart Xray on each profile change.
   // Changes are queued and applied by explicit restart.
   setXrayApplyPending(true);
+}
+
+function xrayDynamicApplyEnabled(): boolean {
+  return XRAY_DYNAMIC_APPLY !== '0';
+}
+
+function runtimeUserEmail(profile: Profile): string {
+  return profile.username;
+}
+
+function buildRuntimeAccount(profile: Profile, inbound: XrayInbound): Record<string, unknown> {
+  const protocol = String(inbound.protocol || '').toLowerCase();
+  const baseEmail = runtimeUserEmail(profile);
+  if (protocol === 'vmess') {
+    return { id: profile.uuid, alterId: 0, email: baseEmail };
+  }
+  if (protocol === 'vless') {
+    const account: Record<string, unknown> = { id: profile.uuid, email: baseEmail, encryption: 'none' };
+    if (profile.flow) account.flow = profile.flow;
+    return account;
+  }
+  if (protocol === 'trojan') {
+    return { password: profile.uuid, email: baseEmail };
+  }
+  if (protocol === 'shadowsocks') {
+    const sourceClient = Array.isArray((inbound.settings as any)?.clients) ? (inbound.settings as any).clients[0] : null;
+    const method = normalizeText(String(sourceClient?.method || 'aes-256-gcm')) || 'aes-256-gcm';
+    return { method, password: profile.uuid, email: baseEmail };
+  }
+  if (protocol === 'hysteria2' || protocol === 'hysteria') {
+    return { auth: profile.uuid, email: baseEmail };
+  }
+  return { id: profile.uuid, email: baseEmail };
+}
+
+function runXrayAPICommand(args: string[]): boolean {
+  try {
+    const xrayBin = getXrayCommandBinary();
+    execSync([xrayBin, 'api', ...args].join(' '), { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function addUserRuntimeToInbound(profile: Profile, inbound: XrayInbound): boolean {
+  const account = buildRuntimeAccount(profile, inbound);
+  const payload = JSON.stringify(account).replace(/'/g, "\\'");
+  const tag = String(inbound.tag || '').replace(/'/g, "\\'");
+  // `adu` exists in newer Xray, `adi` kept as compatibility fallback.
+  return (
+    runXrayAPICommand([`--server=${XRAY_API_ADDRESS}`, 'adu', `-tag='${tag}'`, `'${payload}'`]) ||
+    runXrayAPICommand([`--server=${XRAY_API_ADDRESS}`, 'adi', `-tag='${tag}'`, `'${payload}'`])
+  );
+}
+
+function removeUserRuntimeFromInbound(profile: Profile, inboundTag: string): boolean {
+  const tag = inboundTag.replace(/'/g, "\\'");
+  const email = runtimeUserEmail(profile).replace(/'/g, "\\'");
+  // `rmu` exists in newer Xray, `rmi` kept as compatibility fallback.
+  return (
+    runXrayAPICommand([`--server=${XRAY_API_ADDRESS}`, 'rmu', `-tag='${tag}'`, `'${email}'`]) ||
+    runXrayAPICommand([`--server=${XRAY_API_ADDRESS}`, 'rmi', `-tag='${tag}'`, `'${email}'`])
+  );
+}
+
+function applyUserRuntimeState(profile: Profile): { ok: boolean; message: string } {
+  if (!xrayDynamicApplyEnabled()) {
+    return { ok: false, message: 'dynamic apply disabled by XRAY_DYNAMIC_APPLY=0' };
+  }
+  const inbounds = getXrayInbounds();
+  if (!inbounds.length) {
+    return { ok: false, message: 'no managed inbounds found in xray config' };
+  }
+
+  let failures = 0;
+  for (const ib of inbounds) {
+    const shouldBeEnabled = profile.enable === 1 && (profile.inbound_tags || []).includes(ib.tag);
+    const applied = shouldBeEnabled
+      ? addUserRuntimeToInbound(profile, ib)
+      : removeUserRuntimeFromInbound(profile, ib.tag);
+    if (!applied) failures++;
+  }
+  if (failures > 0) {
+    return { ok: false, message: `runtime apply failed for ${failures} inbound(s)` };
+  }
+  return { ok: true, message: 'runtime apply completed' };
 }
 
 function generateShortToken(length = 10): string {
@@ -748,7 +836,7 @@ function buildXrayConfig() {
   const config: any = {
     ...existing,
     log: { access: '/var/log/xray/access.log', error: '/var/log/xray/error.log', loglevel: 'warning' },
-    api: { tag: 'api', listen: '127.0.0.1:8080', services: ['StatsService'] },
+    api: { tag: 'api', listen: XRAY_API_ADDRESS, services: ['HandlerService', 'StatsService'] },
     stats: {},
     policy: {
       levels: { '0': { statsUserUplink: true, statsUserDownlink: true } },
@@ -802,13 +890,21 @@ function buildXrayConfig() {
     if (clients.length > 0) inbound.settings = { ...inbound.settings, clients };
     config.inbounds.push(inbound);
   }
-  
-  if (config.routing && Array.isArray(config.routing.rules)) {
-    config.routing = {
-      ...config.routing,
-      rules: config.routing.rules.filter((rule: any) => !(Array.isArray(rule?.inboundTag) && rule.inboundTag.includes('api')))
-    };
-  }
+
+  if (!Array.isArray(config.inbounds)) config.inbounds = [];
+  config.inbounds = config.inbounds.filter((ib: any) => ib?.tag !== 'api-inbound');
+  config.inbounds.push({
+    tag: 'api-inbound',
+    listen: '127.0.0.1',
+    port: Number(String(XRAY_API_ADDRESS).split(':')[1] || 8080),
+    protocol: 'dokodemo-door',
+    settings: { address: '127.0.0.1' }
+  });
+
+  const existingRules = Array.isArray(config.routing?.rules) ? config.routing.rules : [];
+  const filteredRules = existingRules.filter((rule: any) => !(Array.isArray(rule?.inboundTag) && rule.inboundTag.includes('api-inbound')));
+  filteredRules.unshift({ type: 'field', inboundTag: ['api-inbound'], outboundTag: 'api' });
+  config.routing = { ...(config.routing || {}), rules: filteredRules };
   
   return config;
 }
@@ -1233,7 +1329,9 @@ app.post('/api/profiles', requireAuth, (req, res) => {
   try {
     saveDB(db);
     saveConfigAndReload();
-    res.json(profile);
+    const runtime = applyUserRuntimeState(profile);
+    if (runtime.ok) setXrayApplyPending(false);
+    res.json({ ...profile, apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
   } catch (error: any) {
     const idx = db.profiles.findIndex(p => p.id === profile.id);
     if (idx >= 0) db.profiles.splice(idx, 1);
@@ -1250,11 +1348,14 @@ app.delete('/api/profiles/:id', requireAuth, (req, res) => {
   const idx = db.profiles.findIndex(p => p.id === profile.id);
   if (idx === -1) return res.status(404).json({ detail: 'Profile not found' });
   
+  const removed = db.profiles[idx];
   db.profiles.splice(idx, 1);
   saveDB(db);
   saveConfigAndReload();
-  
-  res.json({ status: 'ok' });
+
+  const runtime = removed ? applyUserRuntimeState({ ...removed, enable: 0, inbound_tags: removed.inbound_tags || [] }) : { ok: false, message: 'removed profile not found' };
+  if (runtime.ok) setXrayApplyPending(false);
+  res.json({ status: 'ok', apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
 });
 
 app.get('/api/inbounds', requireAuth, (req, res) => {
@@ -1320,7 +1421,9 @@ app.post('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
     profile.updated_at = new Date().toISOString();
     saveDB(db);
     saveConfigAndReload();
-    return res.json(profile.inbound_tags);
+    const runtime = applyUserRuntimeState(profile);
+    if (runtime.ok) setXrayApplyPending(false);
+    return res.json({ tags: profile.inbound_tags, apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
   }
 
   const tag = normalizeText(req.body.tag);
@@ -1335,9 +1438,12 @@ app.post('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
     profile.updated_at = new Date().toISOString();
     saveDB(db);
     saveConfigAndReload();
+    const runtime = applyUserRuntimeState(profile);
+    if (runtime.ok) setXrayApplyPending(false);
+    return res.json({ tags: profile.inbound_tags, apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
   }
   
-  res.json(profile.inbound_tags);
+  res.json({ tags: profile.inbound_tags, apply_pending: db.settings?.xray_apply_pending ? 1 : 0 });
 });
 
 app.put('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
@@ -1360,8 +1466,9 @@ app.put('/api/profiles/:id/inbounds', requireAuth, (req, res) => {
   profile.updated_at = new Date().toISOString();
   saveDB(db);
   saveConfigAndReload();
-
-  res.json(profile.inbound_tags);
+  const runtime = applyUserRuntimeState(profile);
+  if (runtime.ok) setXrayApplyPending(false);
+  res.json({ tags: profile.inbound_tags, apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
 });
 
 app.delete('/api/profiles/:id/inbounds/:tag', requireAuth, (req, res) => {
@@ -1374,8 +1481,9 @@ app.delete('/api/profiles/:id/inbounds/:tag', requireAuth, (req, res) => {
   profile.updated_at = new Date().toISOString();
   saveDB(db);
   saveConfigAndReload();
-  
-  res.json(profile.inbound_tags);
+  const runtime = applyUserRuntimeState(profile);
+  if (runtime.ok) setXrayApplyPending(false);
+  res.json({ tags: profile.inbound_tags, apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
 });
 
 app.post('/api/xray/install', requireAuth, (req, res) => {
@@ -1439,14 +1547,17 @@ app.patch('/api/profiles/:id/toggle', requireAuth, (req, res) => {
   profile.updated_at = new Date().toISOString();
   saveDB(db);
   saveConfigAndReload();
-  
-  res.json({ status: 'ok', enable: profile.enable });
+
+  const runtime = applyUserRuntimeState(profile);
+  if (runtime.ok) setXrayApplyPending(false);
+  res.json({ status: 'ok', enable: profile.enable, apply_pending: runtime.ok ? 0 : 1, apply_message: runtime.message });
 });
 
 app.patch('/api/profiles/:id', requireAuth, (req, res) => {
   const db = loadDB();
   const profile = getProfileById(db, req.params.id);
   if (!profile) return res.status(404).json({ detail: 'Profile not found' });
+  const previous = { ...profile, inbound_tags: [...(profile.inbound_tags || [])] };
 
   const username = req.body.username === undefined ? undefined : normalizeText(req.body.username);
   const server_address = req.body.server_address === undefined ? undefined : normalizeText(req.body.server_address);
@@ -1476,7 +1587,11 @@ app.patch('/api/profiles/:id', requireAuth, (req, res) => {
   profile.updated_at = new Date().toISOString();
   saveDB(db);
   saveConfigAndReload();
-  res.json(profile);
+  const runtimeOld = applyUserRuntimeState({ ...previous, enable: 0 });
+  const runtimeNew = applyUserRuntimeState(profile);
+  const runtimeOK = runtimeOld.ok && runtimeNew.ok;
+  if (runtimeOK) setXrayApplyPending(false);
+  res.json({ ...profile, apply_pending: runtimeOK ? 0 : 1, apply_message: runtimeOK ? 'runtime apply completed' : 'runtime apply failed for one or more inbounds' });
 });
 
 app.get('/api/settings', requireAuth, (req, res) => {

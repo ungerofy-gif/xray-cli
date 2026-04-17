@@ -319,10 +319,6 @@ func (h *Handler) toggleUser(ctx context.Context, cq *tg.CallbackQuery, id int, 
 		return
 	}
 	h.showUserDetails(ctx, cq, id, page)
-	chatID, _, ok := callbackMessageMeta(cq)
-	if ok {
-		h.send(chatID, "⚠️ Изменение сохранено. Для применения требуется перезагрузка Xray.")
-	}
 }
 
 func (h *Handler) deleteUser(ctx context.Context, cq *tg.CallbackQuery, id int, page int) {
@@ -336,10 +332,6 @@ func (h *Handler) deleteUser(ctx context.Context, cq *tg.CallbackQuery, id int, 
 		page = 1
 	}
 	h.showUsersPage(ctx, cq, page)
-	chatID, _, ok := callbackMessageMeta(cq)
-	if ok {
-		h.send(chatID, "⚠️ Изменение сохранено. Для применения требуется перезагрузка Xray.")
-	}
 }
 
 func (h *Handler) startEditUser(ctx context.Context, cq *tg.CallbackQuery, id int, page int) {
@@ -413,7 +405,6 @@ func (h *Handler) applyEditUser(ctx context.Context, cq *tg.CallbackQuery) {
 	}
 	h.store.DeleteEdit(cq.From.ID)
 	h.showUserDetails(ctx, cq, session.UserID, session.ReturnPage)
-	h.send(chatID, "⚠️ Изменения inbound сохранены. Для применения требуется перезагрузка Xray.")
 }
 
 func (h *Handler) cancelEditUser(ctx context.Context, cq *tg.CallbackQuery) {
@@ -479,7 +470,6 @@ func (h *Handler) applyAddInboundsChoice(ctx context.Context, cq *tg.CallbackQue
 		return
 	}
 	h.sendHTML(chatID, fmt.Sprintf("✅ Пользователь создан: <b>%s</b> (ID %d)", html.EscapeString(created.Username), created.ID))
-	h.send(chatID, "⚠️ Пользователь добавлен в конфигурацию. Для применения требуется перезагрузка Xray.")
 	h.sendMenu(chatID)
 }
 
@@ -600,7 +590,6 @@ func (h *Handler) handleConversationMessage(ctx context.Context, msg *tg.Message
 			return
 		}
 		h.sendHTML(msg.Chat.ID, fmt.Sprintf("✅ Пользователь создан: <b>%s</b> (ID %d)", html.EscapeString(created.Username), created.ID))
-		h.send(msg.Chat.ID, "⚠️ Пользователь добавлен в конфигурацию. Для применения требуется перезагрузка Xray.")
 		h.sendMenu(msg.Chat.ID)
 	}
 }
