@@ -403,10 +403,10 @@ function buildRuntimeAccount(profile: Profile, inbound: XrayInbound): Record<str
   return { id: profile.uuid, email: baseEmail };
 }
 
-function runXrayAPICommand(args: string[]): boolean {
+function runXrayAPICommand(command: string, args: string[]): boolean {
   try {
     const xrayBin = getXrayCommandBinary();
-    execSync([xrayBin, 'api', ...args].join(' '), { stdio: 'pipe' });
+    execSync([xrayBin, 'api', command, ...args].join(' '), { stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -417,21 +417,13 @@ function addUserRuntimeToInbound(profile: Profile, inbound: XrayInbound): boolea
   const account = buildRuntimeAccount(profile, inbound);
   const payload = JSON.stringify(account).replace(/'/g, "\\'");
   const tag = String(inbound.tag || '').replace(/'/g, "\\'");
-  // `adu` exists in newer Xray, `adi` kept as compatibility fallback.
-  return (
-    runXrayAPICommand([`--server=${XRAY_API_ADDRESS}`, 'adu', `-tag='${tag}'`, `'${payload}'`]) ||
-    runXrayAPICommand([`--server=${XRAY_API_ADDRESS}`, 'adi', `-tag='${tag}'`, `'${payload}'`])
-  );
+  return runXrayAPICommand('adu', [`--server=${XRAY_API_ADDRESS}`, `--tag='${tag}'`, `'${payload}'`]);
 }
 
 function removeUserRuntimeFromInbound(profile: Profile, inboundTag: string): boolean {
   const tag = inboundTag.replace(/'/g, "\\'");
   const email = runtimeUserEmail(profile).replace(/'/g, "\\'");
-  // `rmu` exists in newer Xray, `rmi` kept as compatibility fallback.
-  return (
-    runXrayAPICommand([`--server=${XRAY_API_ADDRESS}`, 'rmu', `-tag='${tag}'`, `'${email}'`]) ||
-    runXrayAPICommand([`--server=${XRAY_API_ADDRESS}`, 'rmi', `-tag='${tag}'`, `'${email}'`])
-  );
+  return runXrayAPICommand('rmu', [`--server=${XRAY_API_ADDRESS}`, `--tag='${tag}'`, `'${email}'`]);
 }
 
 function applyUserRuntimeState(profile: Profile): { ok: boolean; message: string } {
