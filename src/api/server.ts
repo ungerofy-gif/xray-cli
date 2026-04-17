@@ -404,7 +404,7 @@ function buildRuntimeAccount(profile: Profile, inbound: XrayInbound): Record<str
     return { id: profile.uuid, alterId: 0, email: baseEmail };
   }
   if (protocol === 'vless') {
-    const account: Record<string, unknown> = { id: profile.uuid, email: baseEmail, encryption: 'none' };
+    const account: Record<string, unknown> = { id: profile.uuid, email: baseEmail };
     if (profile.flow) account.flow = profile.flow;
     return account;
   }
