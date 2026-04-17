@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="/root/xray-cli-ts"
+REPO_DIR="/usr/local/xray-cli"
 BOT_DIR="$REPO_DIR/go-bot"
 
 cd "$REPO_DIR"

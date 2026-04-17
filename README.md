@@ -24,3 +24,15 @@ Generated Xray config keeps Xray core API only at top level:
 ```
 
 Legacy API transport wiring (dokodemo-door API inbound/outbound routing) is removed.
+
+## Safe Update Scripts
+
+Separate update scripts are available to avoid cross-service restarts:
+
+```bash
+# Update only Bun/TypeScript API service
+sudo /usr/local/xray-cli/deploy/update-ts-service.sh
+
+# Update only Go Telegram bot service
+sudo /usr/local/xray-cli/go-bot/deploy/update-go-bot.sh
+```

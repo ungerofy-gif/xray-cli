@@ -54,14 +54,14 @@ See `.env.example`.
 ## Build
 
 ```bash
-cd /root/xray-cli-ts/go-bot
+cd /usr/local/xray-cli/go-bot
 make tidy
 make fmt
 make build
 ```
 
 Binary path:
-- `/root/xray-cli-ts/go-bot/bin/xray-telegram-bot`
+- `/usr/local/xray-cli/go-bot/bin/xray-telegram-bot`
 
 ## systemd
 
@@ -71,7 +71,7 @@ Service file:
 Install:
 
 ```bash
-cd /root/xray-cli-ts/go-bot
+cd /usr/local/xray-cli/go-bot
 sudo make install-service
 sudo systemctl restart xray-telegram-bot
 sudo systemctl status xray-telegram-bot
@@ -82,14 +82,14 @@ sudo systemctl status xray-telegram-bot
 1. Pull repo updates:
 
 ```bash
-cd /root/xray-cli-ts
+cd /usr/local/xray-cli
 git pull --ff-only
 ```
 
 2. Rebuild only Go bot:
 
 ```bash
-cd /root/xray-cli-ts/go-bot
+cd /usr/local/xray-cli/go-bot
 make build
 ```
 
@@ -111,7 +111,7 @@ This does not restart or modify Bun/TypeScript API service.
 Automated helper:
 
 ```bash
-sudo /root/xray-cli-ts/go-bot/deploy/update-go-bot.sh
+sudo /usr/local/xray-cli/go-bot/deploy/update-go-bot.sh
 ```
 
 ## Recommended env files

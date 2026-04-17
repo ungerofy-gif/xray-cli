@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/xray-cli-ts/go-bot
+WorkingDirectory=/usr/local/xray-cli/go-bot
 EnvironmentFile=-/etc/default/xraycli-api
 EnvironmentFile=-/etc/default/xraycli-telegram-bot
-ExecStart=/root/xray-cli-ts/go-bot/bin/xray-telegram-bot
+ExecStart=/usr/local/xray-cli/go-bot/bin/xray-telegram-bot
 Restart=always
 RestartSec=3
 User=root
@@ -17,7 +17,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=false
-ReadWritePaths=/root/xray-cli-ts
+ReadWritePaths=/usr/local/xray-cli
 StandardOutput=journal
 StandardError=journal
 
