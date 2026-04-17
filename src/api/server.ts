@@ -441,12 +441,20 @@ function runXrayAPICommand(command: string, args: string[]): boolean {
 
 function addUserRuntimeToInbound(profile: Profile, inbound: XrayInbound): boolean {
   const account = buildRuntimeAccount(profile, inbound);
-  const payload = {
+  const inboundSettings = { ...(inbound.settings || {}) };
+  inboundSettings.clients = [account];
+  const inboundConfig = {
     tag: inbound.tag,
+    listen: inbound.listen,
+    port: inbound.port,
     protocol: inbound.protocol,
-    settings: {
-      clients: [account]
-    }
+    settings: inboundSettings,
+    streamSettings: (inbound as any).streamSettings || (inbound as any).stream_settings || undefined,
+    sniffing: (inbound as any).sniffing,
+    allocate: (inbound as any).allocate
+  };
+  const payload = {
+    inbounds: [inboundConfig]
   };
   const filePath = `/tmp/xray-adu-${Date.now()}-${Math.random().toString(36).slice(2)}.json`;
   writeFileSync(filePath, JSON.stringify(payload));
