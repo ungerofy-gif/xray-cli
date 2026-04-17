@@ -3,23 +3,26 @@ package service
 import (
 	"context"
 	"fmt"
+	"html"
 	"math"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/example/xray-cli-ts/go-bot/internal/analytics"
 	"github.com/example/xray-cli-ts/go-bot/internal/api"
 	"github.com/example/xray-cli-ts/go-bot/internal/models"
 	"github.com/example/xray-cli-ts/go-bot/internal/state"
 )
 
 type Service struct {
-	api *api.Client
+	api       *api.Client
+	analytics *analytics.Store
 }
 
-func New(apiClient *api.Client) *Service {
-	return &Service{api: apiClient}
+func New(apiClient *api.Client, analyticsStore *analytics.Store) *Service {
+	return &Service{api: apiClient, analytics: analyticsStore}
 }
 
 func (s *Service) ListProfiles(ctx context.Context) ([]models.Profile, error) {
@@ -30,6 +33,9 @@ func (s *Service) ListProfiles(ctx context.Context) ([]models.Profile, error) {
 	sort.Slice(profiles, func(i, j int) bool {
 		return strings.ToLower(profiles[i].Username) < strings.ToLower(profiles[j].Username)
 	})
+	if s.analytics != nil {
+		s.analytics.RecordProfiles(profiles)
+	}
 	return profiles, nil
 }
 
@@ -67,13 +73,20 @@ func (s *Service) GetUserDetails(ctx context.Context, id int) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if s.analytics != nil {
+		_ = s.recordProfileFromGet(ctx)
+	}
 
 	status := "Выключен"
 	if profile.Enable == 1 {
 		status = "Включен"
 	}
 
-	usageGB := (profile.UploadBytes + profile.DownloadBytes) / 1024 / 1024 / 1024
+	currentUsageBytes := uint64(0)
+	if profile.UploadBytes+profile.DownloadBytes > 0 {
+		currentUsageBytes = uint64(profile.UploadBytes + profile.DownloadBytes)
+	}
+	usageGB := float64(currentUsageBytes) / 1024 / 1024 / 1024
 	expires := "Никогда"
 	if profile.ExpireDays > 0 && profile.ExpiresAt != "" {
 		if t, err := time.Parse(time.RFC3339, profile.ExpiresAt); err == nil {
@@ -82,12 +95,22 @@ func (s *Service) GetUserDetails(ctx context.Context, id int) (string, error) {
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Имя пользователя: %s\n", profile.Username))
-	b.WriteString(fmt.Sprintf("Статус: %s\n\n", status))
-	b.WriteString(fmt.Sprintf("Лимит по трафику: %.2f GB\n", profile.LimitGB))
-	b.WriteString(fmt.Sprintf("Использовано трафика: %.2f GB\n", usageGB))
-	b.WriteString(fmt.Sprintf("Истекает: %s\n\n", expires))
-	b.WriteString("Подписки:\n")
+	b.WriteString("👤 <b>Пользователь</b>\n")
+	b.WriteString(fmt.Sprintf("Имя пользователя: <b>%s</b>\n", html.EscapeString(profile.Username)))
+	b.WriteString(fmt.Sprintf("Статус: <b>%s</b>\n\n", status))
+	b.WriteString("📊 <b>Трафик</b>\n")
+	b.WriteString(fmt.Sprintf("Лимит по трафику: <b>%.2f GB</b>\n", profile.LimitGB))
+	b.WriteString(fmt.Sprintf("Использовано трафика: <b>%.2f GB</b>\n", usageGB))
+	b.WriteString(fmt.Sprintf("Истекает: <b>%s</b>\n", html.EscapeString(expires)))
+	if s.analytics != nil {
+		periods := s.analytics.GetPeriodUsage(profile.ID, currentUsageBytes, time.Now().UTC())
+		b.WriteString("\n🗂 <b>Аналитика пользователя</b>\n")
+		b.WriteString("1 день: " + formatPeriod(periods.Day.Bytes, periods.Day.Available) + "\n")
+		b.WriteString("1 неделя: " + formatPeriod(periods.Week.Bytes, periods.Week.Available) + "\n")
+		b.WriteString("1 месяц: " + formatPeriod(periods.Month.Bytes, periods.Month.Available) + "\n")
+		b.WriteString("1 год: " + formatPeriod(periods.Year.Bytes, periods.Year.Available) + "\n")
+	}
+	b.WriteString("\n🔗 <b>Подписки</b>\n")
 
 	keys := make([]string, 0, len(sub.URLs))
 	for k := range sub.URLs {
@@ -95,10 +118,17 @@ func (s *Service) GetUserDetails(ctx context.Context, id int) (string, error) {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		b.WriteString(fmt.Sprintf("%s\n%s\n", humanClientName(key), sub.URLs[key]))
+		b.WriteString(fmt.Sprintf("• %s\n<code>%s</code>\n", html.EscapeString(humanClientName(key)), html.EscapeString(sub.URLs[key])))
 	}
 
 	return b.String(), nil
+}
+
+func formatPeriod(bytes uint64, available bool) string {
+	if !available {
+		return "недостаточно данных"
+	}
+	return "<b>" + analytics.FormatBytesGiB(bytes) + "</b>"
 }
 
 func humanClientName(key string) string {
@@ -185,7 +215,7 @@ func (s *Service) ApplyEditInbounds(ctx context.Context, session state.EditInbou
 }
 
 func BuildEditTitle(username string) string {
-	return fmt.Sprintf("Изменение пользователя %s", username)
+	return fmt.Sprintf("✏️ <b>Изменение пользователя</b> <code>%s</code>", html.EscapeString(username))
 }
 
 func (s *Service) CreateUser(ctx context.Context, c state.AddUserConversation) (*models.Profile, error) {
@@ -196,6 +226,34 @@ func (s *Service) CreateUser(ctx context.Context, c state.AddUserConversation) (
 		AddAllInbounds: c.AddAll,
 	}
 	return s.api.CreateProfile(ctx, req)
+}
+
+func (s *Service) ReloadXray(ctx context.Context) error {
+	return s.api.Reload(ctx)
+}
+
+func ServerTotalUsageBytes(profiles []models.Profile) uint64 {
+	var total uint64
+	for _, p := range profiles {
+		raw := p.UploadBytes + p.DownloadBytes
+		if raw <= 0 {
+			continue
+		}
+		total += uint64(raw)
+	}
+	return total
+}
+
+func (s *Service) recordProfileFromGet(ctx context.Context) error {
+	if s.analytics == nil {
+		return nil
+	}
+	profiles, err := s.api.ListProfiles(ctx)
+	if err != nil {
+		return err
+	}
+	s.analytics.RecordProfiles(profiles)
+	return nil
 }
 
 func ParsePositiveFloat(raw string) (float64, error) {

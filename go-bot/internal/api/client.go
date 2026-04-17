@@ -102,6 +102,10 @@ func (c *Client) GetSubscription(ctx context.Context, id int) (*models.Subscript
 	return &out, nil
 }
 
+func (c *Client) Reload(ctx context.Context) error {
+	return c.doJSON(ctx, http.MethodPost, "/reload", nil, nil)
+}
+
 type CreateProfileRequest struct {
 	Username       string  `json:"username"`
 	LimitGB        float64 `json:"limit_gb"`

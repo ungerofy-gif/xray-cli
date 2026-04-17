@@ -23,8 +23,11 @@ Production-ready Telegram bot service for Xray CLI API.
   - `Пользователи`
 - Live CPU/RAM/cores metrics via `gopsutil`.
 - Xray restart via `systemctl restart xray` with diagnostics on failure.
+- Xray apply via API `/reload` (reload-first in backend, restart fallback).
 - Users list with pagination.
 - User detail view with status, traffic, expiry, subscription URLs.
+- Per-user traffic analytics: 1 day / 1 week / 1 month / 1 year (persisted snapshots).
+- Server-wide traffic total in system status screen.
 - Toggle enable/disable, delete user, edit inbounds.
 - Multi-step add-user conversation with validation.
 - Telegram user whitelist (`TG_ALLOWED_USER_IDS`).
@@ -48,6 +51,8 @@ Optional:
 - `METRICS_TIMEOUT` (default `3s`)
 - `COMMAND_TIMEOUT` (default `20s`)
 - `USERS_PER_PAGE` (default `8`)
+- `BOT_ANALYTICS_PATH` (default `/usr/local/xray-cli/go-bot/data/traffic-analytics.json`)
+- `BOT_ANALYTICS_STEP` (default `15m`)
 
 See `.env.example`.
 
@@ -133,4 +138,6 @@ API_TIMEOUT=10s
 METRICS_TIMEOUT=3s
 COMMAND_TIMEOUT=20s
 USERS_PER_PAGE=8
+BOT_ANALYTICS_PATH=/usr/local/xray-cli/go-bot/data/traffic-analytics.json
+BOT_ANALYTICS_STEP=15m
 ```

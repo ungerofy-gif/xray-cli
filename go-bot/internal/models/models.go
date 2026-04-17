@@ -1,22 +1,22 @@
 package models
 
 type Profile struct {
-	ID           int      `json:"id"`
-	UUID         string   `json:"uuid"`
-	Username     string   `json:"username"`
-	Enable       int      `json:"enable"`
-	Flow         string   `json:"flow"`
-	LimitGB      float64  `json:"limit_gb"`
-	UploadBytes  float64  `json:"upload_bytes"`
-	DownloadBytes float64 `json:"download_bytes"`
-	ExpireDays   int      `json:"expire_days"`
-	ExpiresAt    string   `json:"expires_at"`
-	SubUUID      string   `json:"sub_uuid"`
-	InboundTags  []string `json:"inbound_tags"`
-	ServerAddr   string   `json:"server_address"`
-	Remark       string   `json:"remark"`
-	CreatedAt    string   `json:"created_at"`
-	UpdatedAt    string   `json:"updated_at"`
+	ID            int      `json:"id"`
+	UUID          string   `json:"uuid"`
+	Username      string   `json:"username"`
+	Enable        int      `json:"enable"`
+	Flow          string   `json:"flow"`
+	LimitGB       float64  `json:"limit_gb"`
+	UploadBytes   float64  `json:"upload_bytes"`
+	DownloadBytes float64  `json:"download_bytes"`
+	ExpireDays    int      `json:"expire_days"`
+	ExpiresAt     string   `json:"expires_at"`
+	SubUUID       string   `json:"sub_uuid"`
+	InboundTags   []string `json:"inbound_tags"`
+	ServerAddr    string   `json:"server_address"`
+	Remark        string   `json:"remark"`
+	CreatedAt     string   `json:"created_at"`
+	UpdatedAt     string   `json:"updated_at"`
 }
 
 type Inbound struct {

@@ -11,15 +11,17 @@ import (
 )
 
 type Config struct {
-	TelegramToken   string
-	AllowedUserIDs  map[int64]struct{}
-	APIBaseURL      string
-	APIKey          string
-	RequestTimeout  time.Duration
-	MetricsTimeout  time.Duration
-	CommandTimeout  time.Duration
-	UsersPerPage    int
-	SystemEnvFile   string
+	TelegramToken  string
+	AllowedUserIDs map[int64]struct{}
+	APIBaseURL     string
+	APIKey         string
+	RequestTimeout time.Duration
+	MetricsTimeout time.Duration
+	CommandTimeout time.Duration
+	UsersPerPage   int
+	SystemEnvFile  string
+	AnalyticsPath  string
+	AnalyticsStep  time.Duration
 }
 
 func Load() (Config, error) {
@@ -61,6 +63,8 @@ func Load() (Config, error) {
 		CommandTimeout: commandTimeout,
 		UsersPerPage:   usersPerPage,
 		SystemEnvFile:  systemEnvFile,
+		AnalyticsPath:  getenvDefault("BOT_ANALYTICS_PATH", "/usr/local/xray-cli/go-bot/data/traffic-analytics.json"),
+		AnalyticsStep:  parseDurationDefault("BOT_ANALYTICS_STEP", 15*time.Minute),
 	}, nil
 }
 

@@ -12,10 +12,10 @@ import (
 )
 
 type Metrics struct {
-	Cores       int
-	CPUPercent  float64
-	RAMUsedMB   uint64
-	RAMTotalMB  uint64
+	Cores      int
+	CPUPercent float64
+	RAMUsedMB  uint64
+	RAMTotalMB uint64
 }
 
 func GetMetrics(ctx context.Context) (Metrics, error) {
