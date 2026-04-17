@@ -194,6 +194,7 @@ const API_HOST = process.env.API_HOST || '127.0.0.1';
 const API_KEY = process.env.API_KEY || '';
 const XRAY_API_ADDRESS = process.env.XRAY_API_ADDRESS || '127.0.0.1:8080';
 const STATS_CACHE_TTL_MS = Number(process.env.XRAY_STATS_CACHE_TTL_MS || 1000);
+const STATS_SYNC_INTERVAL_MS = Number(process.env.XRAY_STATS_SYNC_INTERVAL_MS || 5000);
 const XRAY_BIN_PATH = process.env.XRAY_BIN_PATH || '';
 
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -408,6 +409,14 @@ function getXrayStats(forceFresh = false): Record<string, number> {
 
   statsCache = { at: now, values: {} };
   return {};
+}
+
+function refreshAndPersistProfileUsage(forceFresh = false): { stats: Record<string, number>; updated: boolean } {
+  const stats = getXrayStats(forceFresh);
+  const db = loadDB();
+  const updated = syncProfileUsageFromStats(db, stats);
+  if (updated) saveDB(db);
+  return { stats, updated };
 }
 
 function normalizeInboundSettings(settings: any): any {
@@ -928,9 +937,8 @@ app.get('/health', requireAuth, (req, res) => {
 });
 
 app.get('/stats', requireAuth, (req, res) => {
-  const stats = getXrayStats();
+  const { stats } = refreshAndPersistProfileUsage(true);
   const db = loadDB();
-  if (syncProfileUsageFromStats(db, stats)) saveDB(db);
   
   const profileStats = db.profiles.map(p => {
     const uplink = stats[`user>>>${p.username}>>>traffic>>>uplink`] ?? stats[`user>>>${p.username}>>>uplink`] ?? p.upload_bytes ?? 0;
@@ -1302,4 +1310,16 @@ app.get('/api/profiles/:id/subscription', requireAuth, (req, res) => {
 
 app.listen(API_PORT, API_HOST, () => {
   console.log(`API server running on ${API_HOST}:${API_PORT}`);
+
+  if (Number.isFinite(STATS_SYNC_INTERVAL_MS) && STATS_SYNC_INTERVAL_MS > 0) {
+    const timer = setInterval(() => {
+      try {
+        refreshAndPersistProfileUsage(false);
+      } catch {}
+    }, STATS_SYNC_INTERVAL_MS);
+    timer.unref?.();
+    console.log(`Traffic sync loop enabled: every ${STATS_SYNC_INTERVAL_MS} ms`);
+  } else {
+    console.log('Traffic sync loop disabled (XRAY_STATS_SYNC_INTERVAL_MS <= 0)');
+  }
 });
