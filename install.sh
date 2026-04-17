@@ -345,6 +345,60 @@ EOF
     fi
 }
 
+install_go_bot_service() {
+    log_step "Building and installing xray-telegram-bot service..."
+
+    local bot_dir="$INSTALL_DIR/go-bot"
+    local bot_service_src="$bot_dir/deploy/xray-telegram-bot.service"
+    local bot_service_dst="/etc/systemd/system/xray-telegram-bot.service"
+
+    if [ ! -d "$bot_dir" ]; then
+        log_warn "Go bot directory not found: $bot_dir"
+        return
+    fi
+
+    if [ ! -f "$bot_service_src" ]; then
+        log_warn "Go bot service file not found: $bot_service_src"
+        return
+    fi
+
+    export PATH="/usr/local/go/bin:$PATH"
+    cd "$bot_dir"
+
+    /usr/local/go/bin/go mod tidy
+    /usr/local/go/bin/go build -trimpath -ldflags='-s -w' -o "$bot_dir/bin/xray-telegram-bot" ./cmd/bot
+
+    install -m 0644 "$bot_service_src" "$bot_service_dst"
+
+    if [ ! -f /etc/default/xraycli-telegram-bot ]; then
+        cat > /etc/default/xraycli-telegram-bot << 'EOF'
+TG_BOT_TOKEN=
+TG_ALLOWED_USER_IDS=
+API_TIMEOUT=10s
+METRICS_TIMEOUT=3s
+COMMAND_TIMEOUT=20s
+USERS_PER_PAGE=8
+SYSTEM_ENV_FILE=/etc/default/xraycli-api
+EOF
+        log_warn "Created /etc/default/xraycli-telegram-bot. Fill TG_BOT_TOKEN and TG_ALLOWED_USER_IDS."
+    fi
+
+    systemctl daemon-reload
+    systemctl enable xray-telegram-bot
+    systemctl restart xray-telegram-bot || {
+        log_warn "Failed to start xray-telegram-bot automatically"
+        log_info "Check logs: journalctl -u xray-telegram-bot -n 100 --no-pager"
+        return
+    }
+
+    if systemctl is-active --quiet xray-telegram-bot 2>/dev/null; then
+        log_info "xray-telegram-bot service is running"
+    else
+        log_warn "xray-telegram-bot service is installed but not running"
+        log_info "Check logs: journalctl -u xray-telegram-bot -n 100 --no-pager"
+    fi
+}
+
 verify_installation() {
     log_step "Verifying installation..."
     
@@ -391,6 +445,12 @@ verify_installation() {
         echo -e "  API:      ${GREEN}✓${NC} /usr/local/bin/xraycli-api"
     else
         echo -e "  API:      ${RED}✗${NC} Not found"
+    fi
+
+    if [ -f "/etc/systemd/system/xray-telegram-bot.service" ]; then
+        echo -e "  TG Bot:   ${GREEN}✓${NC} /etc/systemd/system/xray-telegram-bot.service"
+    else
+        echo -e "  TG Bot:   ${YELLOW}!${NC} Not installed"
     fi
     
     if systemctl is-active --quiet xray 2>/dev/null; then
@@ -442,6 +502,7 @@ main() {
     ensure_xraycli_api_env_file
     create_global_scripts
     create_xraycli_api_service
+    install_go_bot_service
     verify_installation
 }
 
