@@ -224,7 +224,7 @@ EOF
 #!/bin/bash
 export PATH="$HOME/.bun/bin:$PATH"
 export XRAY_CONFIG_PATH="${XRAY_CONFIG_PATH:-/usr/local/etc/xray/config.json}"
-export API_PORT="${API_PORT:-2053}"
+export API_PORT="${API_PORT:-8080}"
 export API_HOST="${API_HOST:-127.0.0.1}"
 exec "$HOME/.bun/bin/bun" run /usr/local/xray-cli/src/api/server.ts "$@"
 EOF
@@ -249,7 +249,7 @@ WorkingDirectory=/usr/local/xray-cli
 EnvironmentFile=-/etc/default/xraycli-api
 Environment=XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json
 Environment=API_HOST=127.0.0.1
-Environment=API_PORT=2053
+Environment=API_PORT=8080
 ExecStart=/usr/local/bin/xraycli-api
 Restart=always
 RestartSec=2
@@ -339,9 +339,9 @@ verify_installation() {
     echo "  0. Exit            - Quit"
     echo ""
     echo "API Endpoints:"
-    echo "  http://127.0.0.1:2053/<token>  # Subscription"
-    echo "  http://127.0.0.1:2053/health    # Health check"
-    echo "  http://127.0.0.1:2053/stats     # Traffic stats"
+    echo "  http://127.0.0.1:8080/<token>  # Subscription"
+    echo "  http://127.0.0.1:8080/health    # Health check"
+    echo "  http://127.0.0.1:8080/stats     # Traffic stats"
     echo ""
 }
 

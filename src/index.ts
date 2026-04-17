@@ -460,7 +460,7 @@ function buildSubscriptionUrls(profile: Profile): Record<string, string> {
   const settings = getSettings();
   const customDomain = normalizeSubscriptionDomain(settings.subscription_domain || '');
   const host = process.env.API_HOST || '127.0.0.1';
-  const port = Number(process.env.API_PORT) || 2053;
+  const port = Number(process.env.API_PORT) || 8080;
   const base = customDomain ? `https://${customDomain}/${profile.sub_uuid}` : `http://${host}:${port}/${profile.sub_uuid}`;
   return {
     default: base,
@@ -757,7 +757,7 @@ function buildXrayConfig() {
   const config: any = {
     ...existing,
     log: { access: '/var/log/xray/access.log', error: '/var/log/xray/error.log', loglevel: 'warning' },
-    api: { tag: 'api', services: ['LoggerService', 'StatsService'] },
+    api: { tag: 'api', listen: '127.0.0.1:8080', services: ['StatsService'] },
     stats: {},
     policy: {
       levels: { '0': { statsUserUplink: true, statsUserDownlink: true } },
@@ -808,31 +808,12 @@ function buildXrayConfig() {
     config.inbounds.push(inbound);
   }
   
-  config.inbounds.push({
-    tag: 'api',
-    port: 62789,
-    listen: '127.0.0.1',
-    protocol: 'dokodemo-door',
-    settings: { address: '127.0.0.1' }
-  });
-
-  const existingRules = Array.isArray(config.routing?.rules) ? config.routing.rules : [];
-  const hasApiRoute = existingRules.some((rule: any) =>
-    rule
-    && rule.type === 'field'
-    && Array.isArray(rule.inboundTag)
-    && rule.inboundTag.includes('api')
-    && rule.outboundTag === 'api'
-  );
-  config.routing = {
-    ...(config.routing || {}),
-    rules: hasApiRoute
-      ? existingRules
-      : [
-        ...existingRules,
-        { type: 'field', inboundTag: ['api'], outboundTag: 'api' }
-      ]
-  };
+  if (config.routing && Array.isArray(config.routing.rules)) {
+    config.routing = {
+      ...config.routing,
+      rules: config.routing.rules.filter((rule: any) => !(Array.isArray(rule?.inboundTag) && rule.inboundTag.includes('api')))
+    };
+  }
   
   return config;
 }
@@ -1288,7 +1269,7 @@ async function main() {
         clear();
         const settings = getSettings();
         renderPanel('Settings', [
-          `API Port: 2053`,
+          `API Port: 8080`,
           `Config: ${XRAY_CONFIG_PATH}`,
           `Database: ${DB_PATH}`,
           `Subscription Title: ${settings.subscription_title || '(default)'}`,

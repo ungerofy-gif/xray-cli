@@ -1,5 +1,5 @@
 #!/bin/bash  
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")" && pwd)"
 export PATH="$HOME/.bun/bin:$PATH"
-export API_PORT="${2:-2053}"
+export API_PORT="${2:-8080}"
 exec "$HOME/.bun/bin/bun" run "$SCRIPT_DIR/src/api/server.ts"
