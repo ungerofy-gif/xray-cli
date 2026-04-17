@@ -1,6 +1,6 @@
 import express from 'express';
 import { exec, execSync } from 'child_process';
-import { writeFileSync } from 'fs';
+import { writeFileSync, unlinkSync } from 'fs';
 import { homedir } from 'os';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { dirname } from 'path';
@@ -441,15 +441,25 @@ function runXrayAPICommand(command: string, args: string[]): boolean {
 
 function addUserRuntimeToInbound(profile: Profile, inbound: XrayInbound): boolean {
   const account = buildRuntimeAccount(profile, inbound);
-  const payload = JSON.stringify(account).replace(/'/g, "\\'");
-  const tag = String(inbound.tag || '').replace(/'/g, "\\'");
-  return runXrayAPICommand('adu', [`--server=${XRAY_API_ADDRESS}`, `--tag='${tag}'`, `'${payload}'`]);
+  const payload = {
+    tag: inbound.tag,
+    users: [account]
+  };
+  const filePath = `/tmp/xray-adu-${Date.now()}-${Math.random().toString(36).slice(2)}.json`;
+  writeFileSync(filePath, JSON.stringify(payload));
+  try {
+    return runXrayAPICommand('adu', [`--server=${XRAY_API_ADDRESS}`, filePath]);
+  } finally {
+    try {
+      unlinkSync(filePath);
+    } catch {}
+  }
 }
 
 function removeUserRuntimeFromInbound(profile: Profile, inboundTag: string): boolean {
-  const tag = inboundTag.replace(/'/g, "\\'");
-  const email = runtimeUserEmail(profile).replace(/'/g, "\\'");
-  return runXrayAPICommand('rmu', [`--server=${XRAY_API_ADDRESS}`, `--tag='${tag}'`, `'${email}'`]);
+  const email = runtimeUserEmail(profile);
+  logDebug('xray.runtime.remove.request', { inbound: inboundTag, email });
+  return runXrayAPICommand('rmu', [`--server=${XRAY_API_ADDRESS}`, email]);
 }
 
 function applyUserRuntimeState(profile: Profile): { ok: boolean; message: string } {
