@@ -43,7 +43,7 @@ func (h *Handler) Start(ctx context.Context) {
 
 func (h *Handler) registerHandlers() {
 	h.bot.RegisterHandler(botapi.HandlerTypeMessageText, "/start", botapi.MatchTypeExact, h.onStart)
-	for _, prefix := range []string{"sys", "xr", "us", "pg", "ad", "ud", "ut", "ux", "ue", "uig", "uok", "ucn", "bk"} {
+	for _, prefix := range []string{"sys", "xr", "us", "pg", "ad", "adib", "ud", "ut", "ux", "ue", "uig", "uok", "ucn", "bk", "menu"} {
 		h.bot.RegisterHandler(botapi.HandlerTypeCallbackQueryData, prefix, botapi.MatchTypePrefix, h.onCallback)
 	}
 }
@@ -108,6 +108,8 @@ func (h *Handler) onCallback(ctx context.Context, _ *botapi.Bot, upd *tg.Update)
 		h.showUsersPage(ctx, cq, parseInt(parts, 1, 1))
 	case "ad":
 		h.startAddConversation(ctx, cq)
+	case "adib":
+		h.applyAddInboundsChoice(ctx, cq, parseInt(parts, 1, -1))
 	case "ud":
 		id := parseInt(parts, 1, 0)
 		if id > 0 {
@@ -138,8 +140,19 @@ func (h *Handler) onCallback(ctx context.Context, _ *botapi.Bot, upd *tg.Update)
 		h.cancelEditUser(ctx, cq)
 	case "bk":
 		h.showUsersPage(ctx, cq, parseInt(parts, 1, 1))
+	case "menu":
+		h.showMainMenu(ctx, cq)
 	}
 	h.answerCallback(ctx, cq.ID, "")
+}
+
+func (h *Handler) showMainMenu(ctx context.Context, cq *tg.CallbackQuery) {
+	chatID, msgID, ok := callbackMessageMeta(cq)
+	if !ok {
+		h.answerCallback(ctx, cq.ID, "Сообщение недоступно")
+		return
+	}
+	h.editTextWithKeyboard(ctx, chatID, msgID, "Выберите действие:", mainKeyboard())
 }
 
 func (h *Handler) showSystemState(ctx context.Context, cq *tg.CallbackQuery) {
@@ -156,8 +169,8 @@ func (h *Handler) showSystemState(ctx context.Context, cq *tg.CallbackQuery) {
 		h.editText(ctx, chatID, msgID, "Не удалось получить метрики системы")
 		return
 	}
-	text := fmt.Sprintf("• Ядер: `%d`\n• CPU: `%.1f%%`\n• RAM: `%d MB / %d MB`", m.Cores, m.CPUPercent, m.RAMUsedMB, m.RAMTotalMB)
-	h.editTextWithKeyboard(ctx, chatID, msgID, text, mainKeyboard(), tg.ParseModeMarkdown)
+	text := fmt.Sprintf("• Ядер: %d\n• CPU: %.1f%%\n• RAM: %d MB / %d MB", m.Cores, m.CPUPercent, m.RAMUsedMB, m.RAMTotalMB)
+	h.editTextWithKeyboard(ctx, chatID, msgID, text, mainKeyboard())
 }
 
 func (h *Handler) restartXray(ctx context.Context, cq *tg.CallbackQuery) {
@@ -175,9 +188,9 @@ func (h *Handler) restartXray(ctx context.Context, cq *tg.CallbackQuery) {
 	}
 	text := "Перезагрузка провалилась"
 	if details != "" {
-		text += "\n\n```\n" + sanitizeCode(details) + "\n```"
+		text += "\n\n" + sanitizeCode(details)
 	}
-	_, _ = h.bot.SendMessage(ctx, &botapi.SendMessageParams{ChatID: chatID, Text: text, ParseMode: tg.ParseModeMarkdown})
+	_, _ = h.bot.SendMessage(ctx, &botapi.SendMessageParams{ChatID: chatID, Text: text})
 }
 
 func (h *Handler) showUsersPage(ctx context.Context, cq *tg.CallbackQuery, page int) {
@@ -216,6 +229,7 @@ func usersKeyboard(items []model.Profile, current, total int) *tg.InlineKeyboard
 			rows = append(rows, nav)
 		}
 	}
+	rows = append(rows, []tg.InlineKeyboardButton{{Text: "В меню", CallbackData: "menu"}})
 	return &tg.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
@@ -238,7 +252,7 @@ func (h *Handler) showUserDetails(ctx context.Context, cq *tg.CallbackQuery, id 
 		h.editText(ctx, chatID, msgID, "Ошибка загрузки пользователя")
 		return
 	}
-	h.editTextWithKeyboard(ctx, chatID, msgID, text, userDetailsKeyboard(id, page), tg.ParseModeMarkdown)
+	h.editTextWithKeyboard(ctx, chatID, msgID, text, userDetailsKeyboard(id, page))
 }
 
 func userDetailsKeyboard(id, page int) *tg.InlineKeyboardMarkup {
@@ -378,7 +392,7 @@ func (h *Handler) renderEditUser(ctx context.Context, chatID int64, msgID int, s
 		rows = append(rows, []tg.InlineKeyboardButton{{Text: prefix + " " + ib.Tag, CallbackData: "uig:" + ib.Tag}})
 	}
 	rows = append(rows, []tg.InlineKeyboardButton{{Text: "Готово", CallbackData: "uok"}, {Text: "Отмена", CallbackData: "ucn"}})
-	h.editTextWithKeyboard(ctx, chatID, msgID, service.BuildEditTitle(session.Username), &tg.InlineKeyboardMarkup{InlineKeyboard: rows}, tg.ParseModeMarkdown)
+	h.editTextWithKeyboard(ctx, chatID, msgID, service.BuildEditTitle(session.Username), &tg.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
 func (h *Handler) startAddConversation(ctx context.Context, cq *tg.CallbackQuery) {
@@ -389,6 +403,33 @@ func (h *Handler) startAddConversation(ctx context.Context, cq *tg.CallbackQuery
 	}
 	h.store.SetConversation(cq.From.ID, state.AddUserConversation{Step: state.AddStepUsername, StartedAt: time.Now(), UpdatedAt: time.Now()})
 	_, _ = h.bot.SendMessage(ctx, &botapi.SendMessageParams{ChatID: chatID, Text: "Введите имя пользователя:"})
+}
+
+func (h *Handler) applyAddInboundsChoice(ctx context.Context, cq *tg.CallbackQuery, value int) {
+	chatID, _, ok := callbackMessageMeta(cq)
+	if !ok {
+		h.answerCallback(ctx, cq.ID, "Сообщение недоступно")
+		return
+	}
+	conv, ok := h.store.GetConversation(cq.From.ID)
+	if !ok || conv.Step != state.AddStepAddInbounds {
+		h.answerCallback(ctx, cq.ID, "Сессия истекла")
+		return
+	}
+	if value != 0 && value != 1 {
+		h.answerCallback(ctx, cq.ID, "Некорректный выбор")
+		return
+	}
+	conv.AddAll = value == 1
+	apiCtx, cancel := context.WithTimeout(ctx, h.cfg.RequestTimeout)
+	defer cancel()
+	created, err := h.svc.CreateUser(apiCtx, conv)
+	h.store.DeleteConversation(cq.From.ID)
+	if err != nil {
+		h.send(chatID, "Ошибка создания пользователя: "+err.Error())
+		return
+	}
+	h.send(chatID, fmt.Sprintf("Пользователь создан: %s (ID %d)", created.Username, created.ID))
 }
 
 func (h *Handler) handleConversationMessage(ctx context.Context, msg *tg.Message) {
@@ -413,7 +454,7 @@ func (h *Handler) handleConversationMessage(ctx context.Context, msg *tg.Message
 		conv.Username = text
 		conv.Step = state.AddStepLimitGB
 		h.store.SetConversation(msg.From.ID, conv)
-		h.send(msg.Chat.ID, "Введите лимит трафика в GB (например: 50):")
+		h.send(msg.Chat.ID, "Введите лимит трафика в GB (0 = безлимит):")
 	case state.AddStepLimitGB:
 		v, err := service.ParsePositiveFloat(text)
 		if err != nil {
@@ -431,16 +472,15 @@ func (h *Handler) handleConversationMessage(ctx context.Context, msg *tg.Message
 			return
 		}
 		conv.ExpireDays = v
-		conv.Step = state.AddStepServerAddr
-		h.store.SetConversation(msg.From.ID, conv)
-		h.send(msg.Chat.ID, "Введите server_address (или '-' чтобы пропустить):")
-	case state.AddStepServerAddr:
-		if text != "-" {
-			conv.ServerAddr = text
-		}
 		conv.Step = state.AddStepAddInbounds
 		h.store.SetConversation(msg.From.ID, conv)
-		h.send(msg.Chat.ID, "Добавить все inbound сразу? (да/нет):")
+		_, _ = h.bot.SendMessage(ctx, &botapi.SendMessageParams{
+			ChatID: msg.Chat.ID,
+			Text:   "Добавить все inbound сразу?",
+			ReplyMarkup: &tg.InlineKeyboardMarkup{InlineKeyboard: [][]tg.InlineKeyboardButton{
+				{{Text: "Да", CallbackData: "adib:1"}, {Text: "Нет", CallbackData: "adib:0"}},
+			}},
+		})
 	case state.AddStepAddInbounds:
 		s := strings.ToLower(text)
 		if s == "да" || s == "yes" || s == "y" {
@@ -448,15 +488,8 @@ func (h *Handler) handleConversationMessage(ctx context.Context, msg *tg.Message
 		} else if s == "нет" || s == "no" || s == "n" {
 			conv.AddAll = false
 		} else {
-			h.send(msg.Chat.ID, "Введите 'да' или 'нет'")
+			h.send(msg.Chat.ID, "Используйте кнопки ниже: Да / Нет")
 			return
-		}
-		conv.Step = state.AddStepRemark
-		h.store.SetConversation(msg.From.ID, conv)
-		h.send(msg.Chat.ID, "Введите remark (или '-' чтобы использовать имя пользователя):")
-	case state.AddStepRemark:
-		if text != "-" {
-			conv.Remark = text
 		}
 		apiCtx, cancel := context.WithTimeout(ctx, h.cfg.RequestTimeout)
 		defer cancel()
@@ -484,11 +517,8 @@ func (h *Handler) editText(ctx context.Context, chatID int64, messageID int, tex
 	h.editTextWithKeyboard(ctx, chatID, messageID, text, nil)
 }
 
-func (h *Handler) editTextWithKeyboard(ctx context.Context, chatID int64, messageID int, text string, kb *tg.InlineKeyboardMarkup, parseMode ...tg.ParseMode) {
+func (h *Handler) editTextWithKeyboard(ctx context.Context, chatID int64, messageID int, text string, kb *tg.InlineKeyboardMarkup) {
 	params := &botapi.EditMessageTextParams{ChatID: chatID, MessageID: messageID, Text: text, ReplyMarkup: kb}
-	if len(parseMode) > 0 {
-		params.ParseMode = parseMode[0]
-	}
 	if _, err := h.bot.EditMessageText(ctx, params); err != nil {
 		h.log.Warn("edit message failed", "error", err)
 	}

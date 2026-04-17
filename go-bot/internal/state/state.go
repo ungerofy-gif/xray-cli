@@ -11,29 +11,25 @@ const (
 	AddStepUsername    AddStep = "username"
 	AddStepLimitGB     AddStep = "limit_gb"
 	AddStepExpireDays  AddStep = "expire_days"
-	AddStepServerAddr  AddStep = "server_address"
 	AddStepAddInbounds AddStep = "add_all_inbounds"
-	AddStepRemark      AddStep = "remark"
 )
 
 type AddUserConversation struct {
-	Step         AddStep
-	Username     string
-	LimitGB      float64
-	ExpireDays   int
-	ServerAddr   string
-	AddAll       bool
-	Remark       string
-	StartedAt    time.Time
-	UpdatedAt    time.Time
+	Step       AddStep
+	Username   string
+	LimitGB    float64
+	ExpireDays int
+	AddAll     bool
+	StartedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 type EditInboundsSession struct {
-	UserID     int
-	Username   string
-	Original   map[string]bool
-	Working    map[string]bool
-	UpdatedAt  time.Time
+	UserID    int
+	Username  string
+	Original  map[string]bool
+	Working   map[string]bool
+	UpdatedAt time.Time
 }
 
 type Store struct {

@@ -84,9 +84,9 @@ func (s *Service) GetUserDetails(ctx context.Context, id int) (string, error) {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Имя пользователя: %s\n", profile.Username))
 	b.WriteString(fmt.Sprintf("Статус: %s\n\n", status))
-	b.WriteString(fmt.Sprintf("Лимит по трафику: `%.2f GB`\n", profile.LimitGB))
-	b.WriteString(fmt.Sprintf("Использовано трафика: `%.2f GB`\n", usageGB))
-	b.WriteString(fmt.Sprintf("Истекает: `%s`\n\n", expires))
+	b.WriteString(fmt.Sprintf("Лимит по трафику: %.2f GB\n", profile.LimitGB))
+	b.WriteString(fmt.Sprintf("Использовано трафика: %.2f GB\n", usageGB))
+	b.WriteString(fmt.Sprintf("Истекает: %s\n\n", expires))
 	b.WriteString("Подписки:\n")
 
 	keys := make([]string, 0, len(sub.URLs))
@@ -95,7 +95,7 @@ func (s *Service) GetUserDetails(ctx context.Context, id int) (string, error) {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		b.WriteString(fmt.Sprintf("%s\n`%s`\n", humanClientName(key), sub.URLs[key]))
+		b.WriteString(fmt.Sprintf("%s\n%s\n", humanClientName(key), sub.URLs[key]))
 	}
 
 	return b.String(), nil
@@ -185,7 +185,7 @@ func (s *Service) ApplyEditInbounds(ctx context.Context, session state.EditInbou
 }
 
 func BuildEditTitle(username string) string {
-	return fmt.Sprintf("Изменение пользователя `%s`", username)
+	return fmt.Sprintf("Изменение пользователя %s", username)
 }
 
 func (s *Service) CreateUser(ctx context.Context, c state.AddUserConversation) (*models.Profile, error) {
@@ -193,8 +193,6 @@ func (s *Service) CreateUser(ctx context.Context, c state.AddUserConversation) (
 		Username:       c.Username,
 		LimitGB:        c.LimitGB,
 		ExpireDays:     c.ExpireDays,
-		ServerAddress:  c.ServerAddr,
-		Remark:         c.Remark,
 		AddAllInbounds: c.AddAll,
 	}
 	return s.api.CreateProfile(ctx, req)

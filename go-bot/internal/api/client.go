@@ -104,8 +104,6 @@ func (c *Client) GetSubscription(ctx context.Context, id int) (*models.Subscript
 
 type CreateProfileRequest struct {
 	Username       string  `json:"username"`
-	ServerAddress  string  `json:"server_address,omitempty"`
-	Remark         string  `json:"remark,omitempty"`
 	LimitGB        float64 `json:"limit_gb"`
 	ExpireDays     int     `json:"expire_days"`
 	AddAllInbounds bool    `json:"add_all_inbounds"`
