@@ -215,5 +215,18 @@ func decodeAPIError(resp *http.Response) error {
 	if payload.Detail == "" {
 		payload.Detail = strings.TrimSpace(string(data))
 	}
+	payload.Detail = sanitizeDetail(payload.Detail)
 	return &APIError{Status: resp.StatusCode, Detail: payload.Detail}
+}
+
+func sanitizeDetail(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return detail
+	}
+	lower := strings.ToLower(detail)
+	if strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype") {
+		return "unexpected HTML error response from backend"
+	}
+	return detail
 }

@@ -355,8 +355,9 @@ function saveConfigAndReload(): void {
   const config = buildXrayConfig();
   mkdirSync(dirname(XRAY_CONFIG_PATH), { recursive: true });
   writeFileSync(XRAY_CONFIG_PATH, JSON.stringify(config, null, 2));
-  if (!reloadXray()) {
-    throw new Error('Failed to reload xray with systemctl reload xray');
+  const reload = reloadXray();
+  if (!reload.ok) {
+    throw new Error(`Failed to reload xray (${reload.method}): ${reload.detail}`);
   }
 }
 
@@ -455,13 +456,26 @@ function restartXray(): boolean {
   }
 }
 
-function reloadXray(): boolean {
-  try {
-    execSync('systemctl reload xray');
-    return true;
-  } catch {
-    return false;
+function reloadXray(): { ok: boolean; method: string; detail: string } {
+  const attempts: Array<{ method: string; cmd: string }> = [
+    { method: 'systemctl reload', cmd: 'systemctl reload xray' },
+    { method: 'systemctl HUP', cmd: 'systemctl kill -s HUP xray' }
+  ];
+
+  let lastError = 'unknown error';
+  for (const attempt of attempts) {
+    try {
+      execSync(attempt.cmd, { stdio: 'pipe' });
+      return { ok: true, method: attempt.method, detail: '' };
+    } catch (error: any) {
+      const stdout = typeof error?.stdout === 'string' ? error.stdout : String(error?.stdout || '');
+      const stderr = typeof error?.stderr === 'string' ? error.stderr : String(error?.stderr || '');
+      const message = normalizeText(String(error?.message || ''));
+      lastError = normalizeText([message, stdout, stderr].filter(Boolean).join(' | ')) || 'unknown error';
+    }
   }
+
+  return { ok: false, method: 'reload/hup', detail: lastError };
 }
 
 let statsCache: { at: number; values: Record<string, number> } = { at: 0, values: {} };
@@ -1203,12 +1217,20 @@ app.post('/api/profiles', requireAuth, (req, res) => {
     created_at: now,
     updated_at: now
   };
-  
+
+  const previousNextProfileID = db.nextProfileId;
   db.profiles.push(profile);
-  saveDB(db);
-  saveConfigAndReload();
-  
-  res.json(profile);
+  try {
+    saveDB(db);
+    saveConfigAndReload();
+    res.json(profile);
+  } catch (error: any) {
+    const idx = db.profiles.findIndex(p => p.id === profile.id);
+    if (idx >= 0) db.profiles.splice(idx, 1);
+    db.nextProfileId = previousNextProfileID;
+    saveDB(db);
+    return res.status(500).json({ detail: error?.message || 'Failed to create profile' });
+  }
 });
 
 app.delete('/api/profiles/:id', requireAuth, (req, res) => {
@@ -1509,6 +1531,13 @@ app.get('/api/profiles/:id/subscription', requireAuth, (req, res) => {
     urls: buildSubscriptionUrls(profile, db.settings),
     supported_clients: SUPPORTED_SUBSCRIPTION_CLIENTS
   });
+});
+
+app.use((error: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const detail = normalizeText(String(error?.message || 'Internal server error')) || 'Internal server error';
+  console.error('Unhandled API error:', detail);
+  if (res.headersSent) return;
+  res.status(500).json({ detail });
 });
 
 app.listen(API_PORT, API_HOST, () => {
